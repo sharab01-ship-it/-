@@ -6,7 +6,28 @@ import type {
 
 /**
  * ==========================================================
- * Google Apps Script
+ * زاد الحلقات - API Service
+ * ==========================================================
+ *
+ * هذا الإصدار مخصص لتشخيص مشكلة الاتصال مع Google Apps Script.
+ *
+ * بما أن:
+ *   GET  → يعمل
+ *   POST → Failed to fetch
+ *
+ * يتم استخدام GET حاليًا لجميع العمليات.
+ *
+ * ملاحظة أمنية:
+ * لا تعتمد هذا الإصدار كحل إنتاجي نهائي لأن بيانات تسجيل
+ * الدخول ستكون ضمن Query String.
+ *
+ * بعد التأكد من نجاح الاتصال سنعيد تصميم POST بطريقة آمنة.
+ */
+
+
+/**
+ * ==========================================================
+ * Google Apps Script URL
  * ==========================================================
  */
 
@@ -17,7 +38,9 @@ const APPS_SCRIPT_URL =
       | undefined
   )?.trim() || '';
 
+
 const REQUEST_TIMEOUT = 30000;
+
 
 const SESSION_STORAGE_KEY =
   'zad_al_halaqat_session';
@@ -30,11 +53,13 @@ const SESSION_STORAGE_KEY =
  */
 
 export class ApiError extends Error {
+
   constructor(
     message: string,
     public code: string,
     public statusCode?: number
   ) {
+
     super(message);
 
     this.name = 'ApiError';
@@ -49,10 +74,15 @@ export class ApiError extends Error {
  */
 
 export interface ApiResponse<T> {
+
   success: boolean;
+
   data?: T;
+
   message?: string;
+
   error?: string;
+
   code?: string;
 }
 
@@ -64,58 +94,76 @@ export interface ApiResponse<T> {
  */
 
 export function getStoredSession(): Session | null {
+
   try {
+
     const raw =
       sessionStorage.getItem(
         SESSION_STORAGE_KEY
       );
 
+
     if (!raw) {
+
       return null;
     }
 
+
     const session =
       JSON.parse(raw) as Session;
+
 
     if (
       !session ||
       !session.expiresAt
     ) {
+
       sessionStorage.removeItem(
         SESSION_STORAGE_KEY
       );
 
       return null;
     }
+
 
     if (
       Date.now() >
       session.expiresAt
     ) {
+
       sessionStorage.removeItem(
         SESSION_STORAGE_KEY
       );
 
       return null;
     }
+
 
     return session;
 
   } catch (error) {
 
     console.error(
-      '[زاد الحلقات] Failed to read session:',
+      '[زاد الحلقات] قراءة الجلسة فشلت:',
       error
     );
+
 
     sessionStorage.removeItem(
       SESSION_STORAGE_KEY
     );
 
+
     return null;
   }
 }
 
+
+/**
+ * ==========================================================
+ * Store Session
+ * ==========================================================
+ */
 
 export function storeSession(
   session: Session
@@ -127,6 +175,12 @@ export function storeSession(
   );
 }
 
+
+/**
+ * ==========================================================
+ * Clear Session
+ * ==========================================================
+ */
 
 export function clearStoredSession(): void {
 
@@ -145,13 +199,18 @@ export function clearStoredSession(): void {
 export function isConfigured(): boolean {
 
   if (!APPS_SCRIPT_URL) {
+
     return false;
   }
+
 
   try {
 
     const url =
-      new URL(APPS_SCRIPT_URL);
+      new URL(
+        APPS_SCRIPT_URL
+      );
+
 
     return (
       url.protocol === 'https:' &&
@@ -172,14 +231,21 @@ export function isConfigured(): boolean {
 }
 
 
+/**
+ * ==========================================================
+ * Get Config URL
+ * ==========================================================
+ */
+
 export function getConfigUrl(): string {
+
   return APPS_SCRIPT_URL;
 }
 
 
 /**
  * ==========================================================
- * Request Controllers
+ * Active Controllers
  * ==========================================================
  */
 
@@ -189,6 +255,12 @@ const activeControllers =
     AbortController
   >();
 
+
+/**
+ * ==========================================================
+ * Request ID
+ * ==========================================================
+ */
 
 function generateRequestId(): string {
 
@@ -214,42 +286,29 @@ function createTimeoutError(): ApiError {
 
 
 function createNetworkError(
-  originalError?: unknown
+  error?: unknown
 ): ApiError {
 
   let details = '';
 
+
   if (
-    originalError instanceof Error
+    error instanceof Error
   ) {
 
     details =
-      ` | ${originalError.name}: ${originalError.message}`;
-
-  } else if (originalError) {
-
-    try {
-
-      details =
-        ` | ${JSON.stringify(
-          originalError
-        )}`;
-
-    } catch {
-
-      details = '';
-    }
+      ` | ${error.name}: ${error.message}`;
   }
 
 
   console.error(
-    '[زاد الحلقات] Google Apps Script Network Error:',
-    originalError
+    '[زاد الحلقات] Network Error:',
+    error
   );
 
 
   console.error(
-    '[زاد الحلقات] Google Apps Script URL:',
+    '[زاد الحلقات] Apps Script URL:',
     APPS_SCRIPT_URL
   );
 
@@ -328,7 +387,7 @@ async function parseResponse<T>(
 
 /**
  * ==========================================================
- * Process API Result
+ * Process Result
  * ==========================================================
  */
 
@@ -337,9 +396,7 @@ function processApiResult<T>(
 ): T {
 
   /**
-   * --------------------------------------------------------
    * Session expired
-   * --------------------------------------------------------
    */
 
   if (
@@ -351,6 +408,7 @@ function processApiResult<T>(
 
     clearStoredSession();
 
+
     throw new ApiError(
       'انتهت الجلسة. يرجى تسجيل الدخول مرة أخرى.',
       'SESSION_EXPIRED'
@@ -359,9 +417,7 @@ function processApiResult<T>(
 
 
   /**
-   * --------------------------------------------------------
    * Permission denied
-   * --------------------------------------------------------
    */
 
   if (
@@ -377,9 +433,7 @@ function processApiResult<T>(
 
 
   /**
-   * --------------------------------------------------------
-   * Failed request
-   * --------------------------------------------------------
+   * Server failure
    */
 
   if (!result.success) {
@@ -402,6 +456,19 @@ function processApiResult<T>(
  * ==========================================================
  * callApi
  * ==========================================================
+ *
+ * في هذا الإصدار:
+ *
+ * GET فقط.
+ *
+ * السبب:
+ * POST من المتصفح إلى Apps Script يعيد:
+ *
+ * TypeError: Failed to fetch
+ *
+ * بينما GET يعمل بنجاح.
+ *
+ * ==========================================================
  */
 
 async function callApi<T>(
@@ -412,21 +479,22 @@ async function callApi<T>(
   > = {},
   method:
     | 'GET'
-    | 'POST' = 'POST'
+    | 'POST' = 'GET'
 ): Promise<T> {
 
   /**
    * --------------------------------------------------------
-   * Configuration check
+   * Configuration
    * --------------------------------------------------------
    */
 
   if (!isConfigured()) {
 
     console.error(
-      '[زاد الحلقات] Invalid Apps Script configuration:',
+      '[زاد الحلقات] Apps Script غير مهيأ:',
       APPS_SCRIPT_URL
     );
+
 
     throw new ApiError(
       'لم يتم إعداد رابط Google Apps Script بشكل صحيح. تأكد من VITE_APPS_SCRIPT_URL.',
@@ -447,7 +515,7 @@ async function callApi<T>(
 
   /**
    * --------------------------------------------------------
-   * AbortController
+   * Controller
    * --------------------------------------------------------
    */
 
@@ -470,7 +538,9 @@ async function callApi<T>(
   const timeoutId =
     window.setTimeout(
       () => {
+
         controller.abort();
+
       },
       REQUEST_TIMEOUT
     );
@@ -480,7 +550,7 @@ async function callApi<T>(
 
     /**
      * ------------------------------------------------------
-     * Stored session
+     * Session
      * ------------------------------------------------------
      */
 
@@ -530,19 +600,19 @@ async function callApi<T>(
 
 
     /**
-     * ======================================================
-     * Debug
-     * ======================================================
-     *
-     * لا نطبع كلمة المرور.
-     * ======================================================
+     * ------------------------------------------------------
+     * Debug payload
+     * ------------------------------------------------------
      */
 
-    const debugPayload =
-      {
-        ...payload,
-      };
+    const debugPayload = {
+      ...payload,
+    };
 
+
+    /**
+     * لا نطبع كلمات المرور في Console
+     */
 
     if (
       'password' in
@@ -591,142 +661,71 @@ async function callApi<T>(
      * ======================================================
      */
 
-    if (method === 'GET') {
-
-      const url =
-        new URL(
-          APPS_SCRIPT_URL
-        );
+    const url =
+      new URL(
+        APPS_SCRIPT_URL
+      );
 
 
-      Object.entries(
-        payload
-      ).forEach(
-        ([key, value]) => {
+    Object.entries(
+      payload
+    ).forEach(
+      ([key, value]) => {
 
-          if (
-            value ===
-              undefined ||
-            value === null
-          ) {
+        if (
+          value ===
+            undefined ||
+          value === null
+        ) {
 
-            return;
-          }
-
-
-          /**
-           * Object / Array
-           */
-
-          if (
-            typeof value ===
-            'object'
-          ) {
-
-            url.searchParams.set(
-              key,
-              JSON.stringify(
-                value
-              )
-            );
-
-          } else {
-
-            url.searchParams.set(
-              key,
-              String(value)
-            );
-          }
+          return;
         }
-      );
 
 
-      console.debug(
-        '[زاد الحلقات] GET URL:',
-        url.toString()
-      );
+        /**
+         * Objects / Arrays
+         */
+
+        if (
+          typeof value ===
+          'object'
+        ) {
+
+          url.searchParams.set(
+            key,
+            JSON.stringify(
+              value
+            )
+          );
+
+        } else {
+
+          url.searchParams.set(
+            key,
+            String(value)
+          );
+        }
+      }
+    );
 
 
-      const response =
-        await fetch(
-          url.toString(),
-          {
-            method: 'GET',
-
-            signal:
-              controller.signal,
-
-            redirect:
-              'follow',
-
-            credentials:
-              'omit',
-
-            cache:
-              'no-store',
-          }
-        );
-
-
-      console.debug(
-        '[زاد الحلقات] GET Response:',
-        response.status,
-        response.statusText
-      );
-
-
-      const result =
-        await parseResponse<T>(
-          response
-        );
-
-
-      console.debug(
-        '[زاد الحلقات] GET Result:',
-        result
-      );
-
-
-      return processApiResult(
-        result
-      );
-    }
+    console.debug(
+      '[زاد الحلقات] GET URL:',
+      url.toString()
+    );
 
 
     /**
      * ======================================================
-     * POST
-     * ======================================================
-     *
-     * مهم:
-     *
-     * text/plain يمنع المتصفح عادةً من
-     * إرسال CORS preflight OPTIONS.
-     *
+     * Fetch
      * ======================================================
      */
 
-    console.debug(
-      '[زاد الحلقات] POST URL:',
-      APPS_SCRIPT_URL
-    );
-
-
     const response =
       await fetch(
-        APPS_SCRIPT_URL,
+        url.toString(),
         {
-          method: 'POST',
-
-          headers: {
-            'Content-Type':
-              'text/plain;charset=utf-8',
-          },
-
-          body:
-            JSON.stringify(
-              payload
-            ),
+          method: 'GET',
 
           signal:
             controller.signal,
@@ -744,11 +743,28 @@ async function callApi<T>(
 
 
     console.debug(
-      '[زاد الحلقات] POST Response:',
-      response.status,
-      response.statusText
+      '[زاد الحلقات] Response:',
+      {
+        status:
+          response.status,
+
+        statusText:
+          response.statusText,
+
+        redirected:
+          response.redirected,
+
+        url:
+          response.url,
+      }
     );
 
+
+    /**
+     * ======================================================
+     * Parse
+     * ======================================================
+     */
 
     const result =
       await parseResponse<T>(
@@ -757,10 +773,16 @@ async function callApi<T>(
 
 
     console.debug(
-      '[زاد الحلقات] POST Result:',
+      '[زاد الحلقات] Result:',
       result
     );
 
+
+    /**
+     * ======================================================
+     * Process
+     * ======================================================
+     */
 
     return processApiResult(
       result
@@ -783,7 +805,6 @@ async function callApi<T>(
         '[زاد الحلقات] API Error:',
         {
           action,
-          method,
           code:
             error.code,
           message:
@@ -792,6 +813,7 @@ async function callApi<T>(
             error.statusCode,
         }
       );
+
 
       throw error;
     }
@@ -810,21 +832,13 @@ async function callApi<T>(
         'AbortError'
     ) {
 
-      console.error(
-        '[زاد الحلقات] Request timeout:',
-        {
-          action,
-          method,
-        }
-      );
-
       throw createTimeoutError();
     }
 
 
     /**
      * ------------------------------------------------------
-     * Network / CORS / Fetch
+     * Network
      * ------------------------------------------------------
      */
 
@@ -846,7 +860,7 @@ async function callApi<T>(
      */
 
     console.error(
-      '[زاد الحلقات] Unknown API error:',
+      '[زاد الحلقات] Unknown API Error:',
       error
     );
 
@@ -875,7 +889,7 @@ async function callApi<T>(
 
 /**
  * ==========================================================
- * Cancel all requests
+ * Cancel Requests
  * ==========================================================
  */
 
@@ -883,6 +897,7 @@ export function cancelAllRequests(): void {
 
   activeControllers.forEach(
     (controller) => {
+
       controller.abort();
     }
   );
@@ -902,7 +917,7 @@ export const api = {
 
   /**
    * ========================================================
-   * Test Connection
+   * Connection Test
    * ========================================================
    */
 
@@ -921,7 +936,7 @@ export const api = {
 
   /**
    * ========================================================
-   * Auth
+   * Authentication
    * ========================================================
    */
 
@@ -938,7 +953,7 @@ export const api = {
         email,
         password,
       },
-      'POST'
+      'GET'
     ),
 
 
@@ -958,7 +973,7 @@ export const api = {
         phone,
         password,
       },
-      'POST'
+      'GET'
     ),
 
 
@@ -978,13 +993,13 @@ export const api = {
     }>(
       'logout',
       {},
-      'POST'
+      'GET'
     ),
 
 
   /**
    * ========================================================
-   * Users / Students
+   * Students / Registration
    * ========================================================
    */
 
@@ -996,7 +1011,7 @@ export const api = {
     }>(
       'getRegistrationRequests',
       {},
-      'POST'
+      'GET'
     ),
 
 
@@ -1010,7 +1025,7 @@ export const api = {
       {
         studentId,
       },
-      'POST'
+      'GET'
     ),
 
 
@@ -1026,7 +1041,7 @@ export const api = {
         studentId,
         reason,
       },
-      'POST'
+      'GET'
     ),
 
 
@@ -1040,7 +1055,7 @@ export const api = {
       {
         studentId,
       },
-      'POST'
+      'GET'
     ),
 
 
@@ -1054,7 +1069,7 @@ export const api = {
       {
         studentId,
       },
-      'POST'
+      'GET'
     ),
 
 
@@ -1064,7 +1079,7 @@ export const api = {
     }>(
       'getStudents',
       {},
-      'POST'
+      'GET'
     ),
 
 
@@ -1074,7 +1089,7 @@ export const api = {
     }>(
       'getUsers',
       {},
-      'POST'
+      'GET'
     ),
 
 
@@ -1088,7 +1103,7 @@ export const api = {
       {
         userId,
       },
-      'POST'
+      'GET'
     ),
 
 
@@ -1122,7 +1137,7 @@ export const api = {
       {
         hadith,
       },
-      'POST'
+      'GET'
     ),
 
 
@@ -1141,7 +1156,7 @@ export const api = {
         hadithId,
         hadith,
       },
-      'POST'
+      'GET'
     ),
 
 
@@ -1155,7 +1170,7 @@ export const api = {
       {
         hadithId,
       },
-      'POST'
+      'GET'
     ),
 
 
@@ -1202,7 +1217,7 @@ export const api = {
         field,
         value,
       },
-      'POST'
+      'GET'
     ),
 
 
@@ -1256,7 +1271,7 @@ export const api = {
       {
         updates,
       },
-      'POST'
+      'GET'
     ),
 
 
@@ -1272,7 +1287,7 @@ export const api = {
         currentPassword,
         newPassword,
       },
-      'POST'
+      'GET'
     ),
 
 
@@ -1286,7 +1301,7 @@ export const api = {
       {
         userId,
       },
-      'POST'
+      'GET'
     ),
 
 
@@ -1308,7 +1323,7 @@ export const api = {
         receiverId,
         content,
       },
-      'POST'
+      'GET'
     ),
 
 
@@ -1343,7 +1358,7 @@ export const api = {
       {
         messageId,
       },
-      'POST'
+      'GET'
     ),
 
 
@@ -1372,7 +1387,7 @@ export const api = {
         content,
         targetUserId,
       },
-      'POST'
+      'GET'
     ),
 
 
@@ -1397,7 +1412,7 @@ export const api = {
       {
         notificationId,
       },
-      'POST'
+      'GET'
     ),
 
 
@@ -1420,7 +1435,7 @@ export const api = {
         userId,
         courseId,
       },
-      'POST'
+      'GET'
     ),
 
 
@@ -1469,7 +1484,7 @@ export const api = {
       {
         settings,
       },
-      'POST'
+      'GET'
     ),
 
 
@@ -1501,7 +1516,7 @@ export const api = {
       {
         name,
       },
-      'POST'
+      'GET'
     ),
 
 
@@ -1535,7 +1550,7 @@ export const api = {
     }>(
       'backupDatabase',
       {},
-      'POST'
+      'GET'
     ),
 
 
@@ -1549,7 +1564,7 @@ export const api = {
       {
         backupId,
       },
-      'POST'
+      'GET'
     ),
 
 
@@ -1577,7 +1592,7 @@ export const api = {
     }>(
       'getFiles',
       {},
-      'POST'
+      'GET'
     ),
 
 
@@ -1603,7 +1618,7 @@ export const api = {
         phone,
         password,
       },
-      'POST'
+      'GET'
     ),
 
 
@@ -1623,7 +1638,7 @@ export const api = {
         phone,
         password,
       },
-      'POST'
+      'GET'
     ),
 
 
@@ -1640,6 +1655,6 @@ export const api = {
     }>(
       'setupSheets',
       {},
-      'POST'
+      'GET'
     ),
 };
