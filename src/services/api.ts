@@ -1,19 +1,26 @@
-import type { Session, User, UserRole } from '@/types';
+import type {
+  Session,
+  User,
+  UserRole,
+} from '@/types';
 
 /**
  * ==========================================================
- * Google Apps Script URL
+ * Google Apps Script
  * ==========================================================
  */
 
 const APPS_SCRIPT_URL =
-  (import.meta.env.VITE_APPS_SCRIPT_URL as string | undefined)?.trim() || '';
+  (
+    import.meta.env.VITE_APPS_SCRIPT_URL as
+      | string
+      | undefined
+  )?.trim() || '';
 
 const REQUEST_TIMEOUT = 30000;
 
-const SESSION_STORAGE_KEY = 'zad_al_halaqat_session';
-
-const activeControllers = new Map<string, AbortController>();
+const SESSION_STORAGE_KEY =
+  'zad_al_halaqat_session';
 
 
 /**
@@ -29,6 +36,7 @@ export class ApiError extends Error {
     public statusCode?: number
   ) {
     super(message);
+
     this.name = 'ApiError';
   }
 }
@@ -57,15 +65,17 @@ export interface ApiResponse<T> {
 
 export function getStoredSession(): Session | null {
   try {
-    const raw = sessionStorage.getItem(
-      SESSION_STORAGE_KEY
-    );
+    const raw =
+      sessionStorage.getItem(
+        SESSION_STORAGE_KEY
+      );
 
     if (!raw) {
       return null;
     }
 
-    const session = JSON.parse(raw) as Session;
+    const session =
+      JSON.parse(raw) as Session;
 
     if (
       !session ||
@@ -91,7 +101,13 @@ export function getStoredSession(): Session | null {
 
     return session;
 
-  } catch {
+  } catch (error) {
+
+    console.error(
+      '[زاد الحلقات] Failed to read session:',
+      error
+    );
+
     sessionStorage.removeItem(
       SESSION_STORAGE_KEY
     );
@@ -104,6 +120,7 @@ export function getStoredSession(): Session | null {
 export function storeSession(
   session: Session
 ): void {
+
   sessionStorage.setItem(
     SESSION_STORAGE_KEY,
     JSON.stringify(session)
@@ -112,6 +129,7 @@ export function storeSession(
 
 
 export function clearStoredSession(): void {
+
   sessionStorage.removeItem(
     SESSION_STORAGE_KEY
   );
@@ -125,18 +143,20 @@ export function clearStoredSession(): void {
  */
 
 export function isConfigured(): boolean {
+
   if (!APPS_SCRIPT_URL) {
     return false;
   }
 
   try {
-    const url = new URL(
-      APPS_SCRIPT_URL
-    );
+
+    const url =
+      new URL(APPS_SCRIPT_URL);
 
     return (
       url.protocol === 'https:' &&
-      url.hostname === 'script.google.com' &&
+      url.hostname ===
+        'script.google.com' &&
       url.pathname.startsWith(
         '/macros/s/'
       ) &&
@@ -146,6 +166,7 @@ export function isConfigured(): boolean {
     );
 
   } catch {
+
     return false;
   }
 }
@@ -158,11 +179,19 @@ export function getConfigUrl(): string {
 
 /**
  * ==========================================================
- * Request ID
+ * Request Controllers
  * ==========================================================
  */
 
+const activeControllers =
+  new Map<
+    string,
+    AbortController
+  >();
+
+
 function generateRequestId(): string {
+
   return `${Date.now()}-${Math.random()
     .toString(36)
     .substring(2, 9)}`;
@@ -176,6 +205,7 @@ function generateRequestId(): string {
  */
 
 function createTimeoutError(): ApiError {
+
   return new ApiError(
     'انتهت مهلة الاتصال بالخادم. يرجى المحاولة مرة أخرى.',
     'TIMEOUT'
@@ -183,9 +213,49 @@ function createTimeoutError(): ApiError {
 }
 
 
-function createNetworkError(): ApiError {
+function createNetworkError(
+  originalError?: unknown
+): ApiError {
+
+  let details = '';
+
+  if (
+    originalError instanceof Error
+  ) {
+
+    details =
+      ` | ${originalError.name}: ${originalError.message}`;
+
+  } else if (originalError) {
+
+    try {
+
+      details =
+        ` | ${JSON.stringify(
+          originalError
+        )}`;
+
+    } catch {
+
+      details = '';
+    }
+  }
+
+
+  console.error(
+    '[زاد الحلقات] Google Apps Script Network Error:',
+    originalError
+  );
+
+
+  console.error(
+    '[زاد الحلقات] Google Apps Script URL:',
+    APPS_SCRIPT_URL
+  );
+
+
   return new ApiError(
-    'تعذر الاتصال بخادم Google Apps Script. تحقق من رابط Google Apps Script ومن نشره كتطبيق ويب.',
+    `تعذر الاتصال بخادم Google Apps Script.${details}`,
     'NETWORK_ERROR'
   );
 }
@@ -193,7 +263,7 @@ function createNetworkError(): ApiError {
 
 /**
  * ==========================================================
- * قراءة JSON من الاستجابة
+ * Parse Response
  * ==========================================================
  */
 
@@ -202,6 +272,7 @@ async function parseResponse<T>(
 ): Promise<ApiResponse<T>> {
 
   if (!response.ok) {
+
     throw new ApiError(
       `خطأ في خادم Google Apps Script (${response.status}).`,
       'HTTP_ERROR',
@@ -209,18 +280,22 @@ async function parseResponse<T>(
     );
   }
 
+
   const text =
     await response.text();
+
 
   if (
     !text ||
     !text.trim()
   ) {
+
     throw new ApiError(
       'الخادم أعاد استجابة فارغة. تحقق من Google Apps Script.',
       'EMPTY_RESPONSE'
     );
   }
+
 
   try {
 
@@ -236,6 +311,13 @@ async function parseResponse<T>(
         .trim()
         .substring(0, 300);
 
+
+    console.error(
+      '[زاد الحلقات] Invalid JSON:',
+      text
+    );
+
+
     throw new ApiError(
       `استجابة غير صالحة من Google Apps Script: ${preview}`,
       'INVALID_JSON'
@@ -246,7 +328,7 @@ async function parseResponse<T>(
 
 /**
  * ==========================================================
- * معالجة نتيجة API
+ * Process API Result
  * ==========================================================
  */
 
@@ -255,8 +337,11 @@ function processApiResult<T>(
 ): T {
 
   /**
-   * انتهاء الجلسة
+   * --------------------------------------------------------
+   * Session expired
+   * --------------------------------------------------------
    */
+
   if (
     result.code ===
       'SESSION_EXPIRED' ||
@@ -274,8 +359,11 @@ function processApiResult<T>(
 
 
   /**
-   * عدم وجود صلاحية
+   * --------------------------------------------------------
+   * Permission denied
+   * --------------------------------------------------------
    */
+
   if (
     result.code ===
     'PERMISSION_DENIED'
@@ -289,8 +377,11 @@ function processApiResult<T>(
 
 
   /**
-   * فشل العملية
+   * --------------------------------------------------------
+   * Failed request
+   * --------------------------------------------------------
    */
+
   if (!result.success) {
 
     throw new ApiError(
@@ -315,17 +406,27 @@ function processApiResult<T>(
 
 async function callApi<T>(
   action: string,
-  params: Record<string, unknown> = {},
-  method: 'GET' | 'POST' = 'POST'
+  params: Record<
+    string,
+    unknown
+  > = {},
+  method:
+    | 'GET'
+    | 'POST' = 'POST'
 ): Promise<T> {
 
   /**
    * --------------------------------------------------------
-   * التحقق من الرابط
+   * Configuration check
    * --------------------------------------------------------
    */
 
   if (!isConfigured()) {
+
+    console.error(
+      '[زاد الحلقات] Invalid Apps Script configuration:',
+      APPS_SCRIPT_URL
+    );
 
     throw new ApiError(
       'لم يتم إعداد رابط Google Apps Script بشكل صحيح. تأكد من VITE_APPS_SCRIPT_URL.',
@@ -334,17 +435,37 @@ async function callApi<T>(
   }
 
 
+  /**
+   * --------------------------------------------------------
+   * Request ID
+   * --------------------------------------------------------
+   */
+
   const requestId =
     generateRequestId();
 
+
+  /**
+   * --------------------------------------------------------
+   * AbortController
+   * --------------------------------------------------------
+   */
+
   const controller =
     new AbortController();
+
 
   activeControllers.set(
     requestId,
     controller
   );
 
+
+  /**
+   * --------------------------------------------------------
+   * Timeout
+   * --------------------------------------------------------
+   */
 
   const timeoutId =
     window.setTimeout(
@@ -359,7 +480,7 @@ async function callApi<T>(
 
     /**
      * ------------------------------------------------------
-     * Session
+     * Stored session
      * ------------------------------------------------------
      */
 
@@ -373,27 +494,95 @@ async function callApi<T>(
      * ------------------------------------------------------
      */
 
-    const payload: Record<
-      string,
-      unknown
-    > = {
+    const payload:
+      Record<
+        string,
+        unknown
+      > = {
+
       action,
+
       ...params,
     };
 
 
     /**
-     * إضافة بيانات الجلسة
+     * ------------------------------------------------------
+     * Session credentials
+     * ------------------------------------------------------
      */
 
     if (session) {
 
-      payload.token =
-        session.token;
+      if (session.token) {
 
-      payload.userId =
-        session.userId;
+        payload.token =
+          session.token;
+      }
+
+
+      if (session.userId) {
+
+        payload.userId =
+          session.userId;
+      }
     }
+
+
+    /**
+     * ======================================================
+     * Debug
+     * ======================================================
+     *
+     * لا نطبع كلمة المرور.
+     * ======================================================
+     */
+
+    const debugPayload =
+      {
+        ...payload,
+      };
+
+
+    if (
+      'password' in
+      debugPayload
+    ) {
+
+      debugPayload.password =
+        '***';
+    }
+
+
+    if (
+      'currentPassword' in
+      debugPayload
+    ) {
+
+      debugPayload.currentPassword =
+        '***';
+    }
+
+
+    if (
+      'newPassword' in
+      debugPayload
+    ) {
+
+      debugPayload.newPassword =
+        '***';
+    }
+
+
+    console.debug(
+      '[زاد الحلقات] API Request:',
+      {
+        action,
+        method,
+        payload:
+          debugPayload,
+      }
+    );
 
 
     /**
@@ -416,34 +605,45 @@ async function callApi<T>(
         ([key, value]) => {
 
           if (
-            value !== undefined &&
-            value !== null
+            value ===
+              undefined ||
+            value === null
           ) {
 
-            /**
-             * JSON للقيم المركبة
-             */
-            if (
-              typeof value ===
-                'object'
-            ) {
+            return;
+          }
 
-              url.searchParams.set(
-                key,
-                JSON.stringify(
-                  value
-                )
-              );
 
-            } else {
+          /**
+           * Object / Array
+           */
 
-              url.searchParams.set(
-                key,
-                String(value)
-              );
-            }
+          if (
+            typeof value ===
+            'object'
+          ) {
+
+            url.searchParams.set(
+              key,
+              JSON.stringify(
+                value
+              )
+            );
+
+          } else {
+
+            url.searchParams.set(
+              key,
+              String(value)
+            );
           }
         }
+      );
+
+
+      console.debug(
+        '[زاد الحلقات] GET URL:',
+        url.toString()
       );
 
 
@@ -456,19 +656,35 @@ async function callApi<T>(
             signal:
               controller.signal,
 
-            redirect: 'follow',
+            redirect:
+              'follow',
 
-            credentials: 'omit',
+            credentials:
+              'omit',
 
-            cache: 'no-store',
+            cache:
+              'no-store',
           }
         );
+
+
+      console.debug(
+        '[زاد الحلقات] GET Response:',
+        response.status,
+        response.statusText
+      );
 
 
       const result =
         await parseResponse<T>(
           response
         );
+
+
+      console.debug(
+        '[زاد الحلقات] GET Result:',
+        result
+      );
 
 
       return processApiResult(
@@ -482,12 +698,19 @@ async function callApi<T>(
      * POST
      * ======================================================
      *
-     * Google Apps Script Web App
+     * مهم:
      *
-     * نستخدم text/plain حتى لا نطلب
-     * CORS preflight OPTIONS.
+     * text/plain يمنع المتصفح عادةً من
+     * إرسال CORS preflight OPTIONS.
+     *
      * ======================================================
      */
+
+    console.debug(
+      '[زاد الحلقات] POST URL:',
+      APPS_SCRIPT_URL
+    );
+
 
     const response =
       await fetch(
@@ -520,10 +743,23 @@ async function callApi<T>(
       );
 
 
+    console.debug(
+      '[زاد الحلقات] POST Response:',
+      response.status,
+      response.statusText
+    );
+
+
     const result =
       await parseResponse<T>(
         response
       );
+
+
+    console.debug(
+      '[زاد الحلقات] POST Result:',
+      result
+    );
 
 
     return processApiResult(
@@ -543,6 +779,20 @@ async function callApi<T>(
       error instanceof ApiError
     ) {
 
+      console.error(
+        '[زاد الحلقات] API Error:',
+        {
+          action,
+          method,
+          code:
+            error.code,
+          message:
+            error.message,
+          statusCode:
+            error.statusCode,
+        }
+      );
+
       throw error;
     }
 
@@ -560,6 +810,14 @@ async function callApi<T>(
         'AbortError'
     ) {
 
+      console.error(
+        '[زاد الحلقات] Request timeout:',
+        {
+          action,
+          method,
+        }
+      );
+
       throw createTimeoutError();
     }
 
@@ -575,7 +833,9 @@ async function callApi<T>(
       TypeError
     ) {
 
-      throw createNetworkError();
+      throw createNetworkError(
+        error
+      );
     }
 
 
@@ -584,6 +844,12 @@ async function callApi<T>(
      * Unknown
      * ------------------------------------------------------
      */
+
+    console.error(
+      '[زاد الحلقات] Unknown API error:',
+      error
+    );
+
 
     throw new ApiError(
       error instanceof Error
@@ -599,6 +865,7 @@ async function callApi<T>(
       timeoutId
     );
 
+
     activeControllers.delete(
       requestId
     );
@@ -608,7 +875,7 @@ async function callApi<T>(
 
 /**
  * ==========================================================
- * إلغاء جميع الطلبات
+ * Cancel all requests
  * ==========================================================
  */
 
@@ -619,6 +886,7 @@ export function cancelAllRequests(): void {
       controller.abort();
     }
   );
+
 
   activeControllers.clear();
 }
@@ -634,7 +902,7 @@ export const api = {
 
   /**
    * ========================================================
-   * اختبار الاتصال
+   * Test Connection
    * ========================================================
    */
 
@@ -644,7 +912,6 @@ export const api = {
       service: string;
       method: string;
       timestamp: string;
-      message: string;
     }>(
       'test',
       {},
@@ -717,7 +984,7 @@ export const api = {
 
   /**
    * ========================================================
-   * Students / Registration
+   * Users / Students
    * ========================================================
    */
 
@@ -1091,11 +1358,8 @@ export const api = {
       | UserRole
       | 'all'
       | 'group',
-
     title: string,
-
     content: string,
-
     targetUserId?: string
   ) =>
     callApi<{
