@@ -1,9 +1,26 @@
 import type { Session, User, UserRole } from '@/types';
 
+/**
+ * ==========================================================
+ * Google Apps Script URL
+ * ==========================================================
+ */
+
 const APPS_SCRIPT_URL =
   (import.meta.env.VITE_APPS_SCRIPT_URL as string | undefined)?.trim() || '';
 
 const REQUEST_TIMEOUT = 30000;
+
+const SESSION_STORAGE_KEY = 'zad_al_halaqat_session';
+
+const activeControllers = new Map<string, AbortController>();
+
+
+/**
+ * ==========================================================
+ * ApiError
+ * ==========================================================
+ */
 
 export class ApiError extends Error {
   constructor(
@@ -16,6 +33,13 @@ export class ApiError extends Error {
   }
 }
 
+
+/**
+ * ==========================================================
+ * ApiResponse
+ * ==========================================================
+ */
+
 export interface ApiResponse<T> {
   success: boolean;
   data?: T;
@@ -24,11 +48,18 @@ export interface ApiResponse<T> {
   code?: string;
 }
 
-const SESSION_STORAGE_KEY = 'zad_al_halaqat_session';
+
+/**
+ * ==========================================================
+ * Session
+ * ==========================================================
+ */
 
 export function getStoredSession(): Session | null {
   try {
-    const raw = sessionStorage.getItem(SESSION_STORAGE_KEY);
+    const raw = sessionStorage.getItem(
+      SESSION_STORAGE_KEY
+    );
 
     if (!raw) {
       return null;
@@ -36,54 +67,113 @@ export function getStoredSession(): Session | null {
 
     const session = JSON.parse(raw) as Session;
 
-    if (!session || !session.expiresAt) {
-      sessionStorage.removeItem(SESSION_STORAGE_KEY);
+    if (
+      !session ||
+      !session.expiresAt
+    ) {
+      sessionStorage.removeItem(
+        SESSION_STORAGE_KEY
+      );
+
       return null;
     }
 
-    if (Date.now() > session.expiresAt) {
-      sessionStorage.removeItem(SESSION_STORAGE_KEY);
+    if (
+      Date.now() >
+      session.expiresAt
+    ) {
+      sessionStorage.removeItem(
+        SESSION_STORAGE_KEY
+      );
+
       return null;
     }
 
     return session;
+
   } catch {
-    sessionStorage.removeItem(SESSION_STORAGE_KEY);
+    sessionStorage.removeItem(
+      SESSION_STORAGE_KEY
+    );
+
     return null;
   }
 }
 
-export function storeSession(session: Session): void {
+
+export function storeSession(
+  session: Session
+): void {
   sessionStorage.setItem(
     SESSION_STORAGE_KEY,
     JSON.stringify(session)
   );
 }
 
-export function clearStoredSession(): void {
-  sessionStorage.removeItem(SESSION_STORAGE_KEY);
-}
 
-export function isConfigured(): boolean {
-  return Boolean(
-    APPS_SCRIPT_URL &&
-    /^https:\/\/script\.google\.com\/macros\/s\/.+\/exec(?:\?.*)?$/.test(
-      APPS_SCRIPT_URL
-    )
+export function clearStoredSession(): void {
+  sessionStorage.removeItem(
+    SESSION_STORAGE_KEY
   );
 }
+
+
+/**
+ * ==========================================================
+ * Configuration
+ * ==========================================================
+ */
+
+export function isConfigured(): boolean {
+  if (!APPS_SCRIPT_URL) {
+    return false;
+  }
+
+  try {
+    const url = new URL(
+      APPS_SCRIPT_URL
+    );
+
+    return (
+      url.protocol === 'https:' &&
+      url.hostname === 'script.google.com' &&
+      url.pathname.startsWith(
+        '/macros/s/'
+      ) &&
+      url.pathname.endsWith(
+        '/exec'
+      )
+    );
+
+  } catch {
+    return false;
+  }
+}
+
 
 export function getConfigUrl(): string {
   return APPS_SCRIPT_URL;
 }
 
-const activeControllers = new Map<string, AbortController>();
+
+/**
+ * ==========================================================
+ * Request ID
+ * ==========================================================
+ */
 
 function generateRequestId(): string {
   return `${Date.now()}-${Math.random()
     .toString(36)
     .substring(2, 9)}`;
 }
+
+
+/**
+ * ==========================================================
+ * Errors
+ * ==========================================================
+ */
 
 function createTimeoutError(): ApiError {
   return new ApiError(
@@ -92,6 +182,7 @@ function createTimeoutError(): ApiError {
   );
 }
 
+
 function createNetworkError(): ApiError {
   return new ApiError(
     'تعذر الاتصال بخادم Google Apps Script. تحقق من رابط Google Apps Script ومن نشره كتطبيق ويب.',
@@ -99,226 +190,400 @@ function createNetworkError(): ApiError {
   );
 }
 
+
+/**
+ * ==========================================================
+ * قراءة JSON من الاستجابة
+ * ==========================================================
+ */
+
+async function parseResponse<T>(
+  response: Response
+): Promise<ApiResponse<T>> {
+
+  if (!response.ok) {
+    throw new ApiError(
+      `خطأ في خادم Google Apps Script (${response.status}).`,
+      'HTTP_ERROR',
+      response.status
+    );
+  }
+
+  const text =
+    await response.text();
+
+  if (
+    !text ||
+    !text.trim()
+  ) {
+    throw new ApiError(
+      'الخادم أعاد استجابة فارغة. تحقق من Google Apps Script.',
+      'EMPTY_RESPONSE'
+    );
+  }
+
+  try {
+
+    return JSON.parse(
+      text
+    ) as ApiResponse<T>;
+
+  } catch {
+
+    const preview =
+      text
+        .replace(/\s+/g, ' ')
+        .trim()
+        .substring(0, 300);
+
+    throw new ApiError(
+      `استجابة غير صالحة من Google Apps Script: ${preview}`,
+      'INVALID_JSON'
+    );
+  }
+}
+
+
+/**
+ * ==========================================================
+ * معالجة نتيجة API
+ * ==========================================================
+ */
+
+function processApiResult<T>(
+  result: ApiResponse<T>
+): T {
+
+  /**
+   * انتهاء الجلسة
+   */
+  if (
+    result.code ===
+      'SESSION_EXPIRED' ||
+    result.code ===
+      'INVALID_SESSION'
+  ) {
+
+    clearStoredSession();
+
+    throw new ApiError(
+      'انتهت الجلسة. يرجى تسجيل الدخول مرة أخرى.',
+      'SESSION_EXPIRED'
+    );
+  }
+
+
+  /**
+   * عدم وجود صلاحية
+   */
+  if (
+    result.code ===
+    'PERMISSION_DENIED'
+  ) {
+
+    throw new ApiError(
+      'ليس لديك صلاحية لتنفيذ هذه العملية.',
+      'PERMISSION_DENIED'
+    );
+  }
+
+
+  /**
+   * فشل العملية
+   */
+  if (!result.success) {
+
+    throw new ApiError(
+      result.message ||
+        result.error ||
+        'حدث خطأ غير متوقع في الخادم.',
+      result.code ||
+        'UNKNOWN_ERROR'
+    );
+  }
+
+
+  return result.data as T;
+}
+
+
+/**
+ * ==========================================================
+ * callApi
+ * ==========================================================
+ */
+
 async function callApi<T>(
   action: string,
   params: Record<string, unknown> = {},
   method: 'GET' | 'POST' = 'POST'
 ): Promise<T> {
+
+  /**
+   * --------------------------------------------------------
+   * التحقق من الرابط
+   * --------------------------------------------------------
+   */
+
   if (!isConfigured()) {
+
     throw new ApiError(
-      'لم يتم إعداد رابط Google Apps Script بشكل صحيح. تأكد من VITE_APPS_SCRIPT_URL في إعدادات Vercel.',
+      'لم يتم إعداد رابط Google Apps Script بشكل صحيح. تأكد من VITE_APPS_SCRIPT_URL.',
       'NOT_CONFIGURED'
     );
   }
 
-  const requestId = generateRequestId();
 
-  const controller = new AbortController();
+  const requestId =
+    generateRequestId();
+
+  const controller =
+    new AbortController();
 
   activeControllers.set(
     requestId,
     controller
   );
 
-  const timeoutId = window.setTimeout(() => {
-    controller.abort();
-  }, REQUEST_TIMEOUT);
+
+  const timeoutId =
+    window.setTimeout(
+      () => {
+        controller.abort();
+      },
+      REQUEST_TIMEOUT
+    );
+
 
   try {
-    const session = getStoredSession();
 
-    const payload: Record<string, unknown> = {
+    /**
+     * ------------------------------------------------------
+     * Session
+     * ------------------------------------------------------
+     */
+
+    const session =
+      getStoredSession();
+
+
+    /**
+     * ------------------------------------------------------
+     * Payload
+     * ------------------------------------------------------
+     */
+
+    const payload: Record<
+      string,
+      unknown
+    > = {
       action,
       ...params,
     };
 
+
+    /**
+     * إضافة بيانات الجلسة
+     */
+
     if (session) {
-      payload.token = session.token;
-      payload.userId = session.userId;
+
+      payload.token =
+        session.token;
+
+      payload.userId =
+        session.userId;
     }
 
-    let response: Response;
 
     /**
      * ======================================================
      * GET
      * ======================================================
      */
-    if (method === 'GET') {
-      const url = new URL(APPS_SCRIPT_URL);
 
-      Object.entries(payload).forEach(
+    if (method === 'GET') {
+
+      const url =
+        new URL(
+          APPS_SCRIPT_URL
+        );
+
+
+      Object.entries(
+        payload
+      ).forEach(
         ([key, value]) => {
-          if (value !== undefined && value !== null) {
-            url.searchParams.set(
-              key,
-              String(value)
-            );
+
+          if (
+            value !== undefined &&
+            value !== null
+          ) {
+
+            /**
+             * JSON للقيم المركبة
+             */
+            if (
+              typeof value ===
+                'object'
+            ) {
+
+              url.searchParams.set(
+                key,
+                JSON.stringify(
+                  value
+                )
+              );
+
+            } else {
+
+              url.searchParams.set(
+                key,
+                String(value)
+              );
+            }
           }
         }
       );
 
-      response = await fetch(
-        url.toString(),
-        {
-          method: 'GET',
-          signal: controller.signal,
-          redirect: 'follow',
-          credentials: 'omit',
-          cache: 'no-store',
-        }
+
+      const response =
+        await fetch(
+          url.toString(),
+          {
+            method: 'GET',
+
+            signal:
+              controller.signal,
+
+            redirect: 'follow',
+
+            credentials: 'omit',
+
+            cache: 'no-store',
+          }
+        );
+
+
+      const result =
+        await parseResponse<T>(
+          response
+        );
+
+
+      return processApiResult(
+        result
       );
     }
+
 
     /**
      * ======================================================
      * POST
      * ======================================================
+     *
+     * Google Apps Script Web App
+     *
+     * نستخدم text/plain حتى لا نطلب
+     * CORS preflight OPTIONS.
+     * ======================================================
      */
-    else {
-      response = await fetch(
+
+    const response =
+      await fetch(
         APPS_SCRIPT_URL,
         {
           method: 'POST',
 
-          /*
-           * مهم:
-           * نستخدم text/plain حتى لا يرسل المتصفح
-           * طلب CORS preflight OPTIONS غير المدعوم
-           * عادةً من Google Apps Script Web App.
-           */
           headers: {
             'Content-Type':
               'text/plain;charset=utf-8',
           },
 
-          body: JSON.stringify(payload),
+          body:
+            JSON.stringify(
+              payload
+            ),
 
-          signal: controller.signal,
+          signal:
+            controller.signal,
 
-          redirect: 'follow',
+          redirect:
+            'follow',
 
-          credentials: 'omit',
+          credentials:
+            'omit',
 
-          cache: 'no-store',
+          cache:
+            'no-store',
         }
       );
-    }
 
-    if (!response.ok) {
-      throw new ApiError(
-        `خطأ في خادم Google Apps Script (${response.status}).`,
-        'HTTP_ERROR',
-        response.status
+
+    const result =
+      await parseResponse<T>(
+        response
       );
-    }
 
-    const text = await response.text();
 
-    if (!text || !text.trim()) {
-      throw new ApiError(
-        'الخادم أعاد استجابة فارغة. تحقق من Google Apps Script.',
-        'EMPTY_RESPONSE'
-      );
-    }
+    return processApiResult(
+      result
+    );
 
-    let result: ApiResponse<T>;
 
-    try {
-      result = JSON.parse(text) as ApiResponse<T>;
-    } catch {
-      /*
-       * عرض جزء من الاستجابة يساعد في تشخيص
-       * صفحات الخطأ التي قد يعيدها Apps Script.
-       */
-      const preview = text
-        .replace(/\s+/g, ' ')
-        .trim()
-        .substring(0, 200);
-
-      throw new ApiError(
-        `استجابة غير صالحة من Google Apps Script: ${preview}`,
-        'INVALID_JSON'
-      );
-    }
-
-    /**
-     * ======================================================
-     * انتهاء الجلسة
-     * ======================================================
-     */
-    if (
-      result.code === 'SESSION_EXPIRED' ||
-      result.code === 'INVALID_SESSION'
-    ) {
-      clearStoredSession();
-
-      throw new ApiError(
-        'انتهت الجلسة. يرجى تسجيل الدخول مرة أخرى.',
-        'SESSION_EXPIRED'
-      );
-    }
-
-    /**
-     * ======================================================
-     * عدم وجود صلاحية
-     * ======================================================
-     */
-    if (
-      result.code === 'PERMISSION_DENIED'
-    ) {
-      throw new ApiError(
-        'ليس لديك صلاحية لتنفيذ هذه العملية.',
-        'PERMISSION_DENIED'
-      );
-    }
-
-    /**
-     * ======================================================
-     * فشل العملية من الخادم
-     * ======================================================
-     */
-    if (!result.success) {
-      throw new ApiError(
-        result.message ||
-          result.error ||
-          'حدث خطأ غير متوقع في الخادم.',
-        result.code ||
-          'UNKNOWN_ERROR'
-      );
-    }
-
-    return result.data as T;
   } catch (error) {
+
     /**
-     * إذا كان الخطأ ApiError
-     * نعيده كما هو.
+     * ------------------------------------------------------
+     * ApiError
+     * ------------------------------------------------------
      */
-    if (error instanceof ApiError) {
+
+    if (
+      error instanceof ApiError
+    ) {
+
       throw error;
     }
 
+
     /**
+     * ------------------------------------------------------
      * Timeout
+     * ------------------------------------------------------
      */
+
     if (
-      error instanceof DOMException &&
-      error.name === 'AbortError'
+      error instanceof
+        DOMException &&
+      error.name ===
+        'AbortError'
     ) {
+
       throw createTimeoutError();
     }
 
+
     /**
-     * بعض المتصفحات قد تستخدم TypeError
-     * عند فشل fetch.
+     * ------------------------------------------------------
+     * Network / CORS / Fetch
+     * ------------------------------------------------------
      */
+
     if (
-      error instanceof TypeError
+      error instanceof
+      TypeError
     ) {
-      return Promise.reject(
-        createNetworkError()
-      );
+
+      throw createNetworkError();
     }
+
+
+    /**
+     * ------------------------------------------------------
+     * Unknown
+     * ------------------------------------------------------
+     */
 
     throw new ApiError(
       error instanceof Error
@@ -326,8 +591,13 @@ async function callApi<T>(
         : 'حدث خطأ غير متوقع.',
       'UNKNOWN_ERROR'
     );
+
+
   } finally {
-    window.clearTimeout(timeoutId);
+
+    window.clearTimeout(
+      timeoutId
+    );
 
     activeControllers.delete(
       requestId
@@ -335,7 +605,15 @@ async function callApi<T>(
   }
 }
 
+
+/**
+ * ==========================================================
+ * إلغاء جميع الطلبات
+ * ==========================================================
+ */
+
 export function cancelAllRequests(): void {
+
   activeControllers.forEach(
     (controller) => {
       controller.abort();
@@ -345,16 +623,40 @@ export function cancelAllRequests(): void {
   activeControllers.clear();
 }
 
+
 /**
  * ==========================================================
  * API
  * ==========================================================
  */
+
 export const api = {
 
-  // ========================================================
-  // Auth
-  // ========================================================
+  /**
+   * ========================================================
+   * اختبار الاتصال
+   * ========================================================
+   */
+
+  testConnection: () =>
+    callApi<{
+      status: string;
+      service: string;
+      method: string;
+      timestamp: string;
+      message: string;
+    }>(
+      'test',
+      {},
+      'GET'
+    ),
+
+
+  /**
+   * ========================================================
+   * Auth
+   * ========================================================
+   */
 
   login: (
     email: string,
@@ -371,6 +673,7 @@ export const api = {
       },
       'POST'
     ),
+
 
   register: (
     name: string,
@@ -391,6 +694,7 @@ export const api = {
       'POST'
     ),
 
+
   verifySession: () =>
     callApi<{
       user: User;
@@ -399,6 +703,7 @@ export const api = {
       {},
       'GET'
     ),
+
 
   logout: () =>
     callApi<{
@@ -409,18 +714,24 @@ export const api = {
       'POST'
     ),
 
-  // ========================================================
-  // Students / Registration
-  // ========================================================
+
+  /**
+   * ========================================================
+   * Students / Registration
+   * ========================================================
+   */
 
   getRegistrationRequests: () =>
     callApi<{
-      requests: import('@/types').RegistrationRequest[];
+      requests:
+        import('@/types')
+          .RegistrationRequest[];
     }>(
       'getRegistrationRequests',
       {},
       'POST'
     ),
+
 
   approveStudent: (
     studentId: string
@@ -434,6 +745,7 @@ export const api = {
       },
       'POST'
     ),
+
 
   rejectStudent: (
     studentId: string,
@@ -450,6 +762,7 @@ export const api = {
       'POST'
     ),
 
+
   suspendStudent: (
     studentId: string
   ) =>
@@ -462,6 +775,7 @@ export const api = {
       },
       'POST'
     ),
+
 
   unsuspendStudent: (
     studentId: string
@@ -476,6 +790,7 @@ export const api = {
       'POST'
     ),
 
+
   getStudents: () =>
     callApi<{
       students: User[];
@@ -485,6 +800,7 @@ export const api = {
       'POST'
     ),
 
+
   getUsers: () =>
     callApi<{
       users: User[];
@@ -493,6 +809,7 @@ export const api = {
       {},
       'POST'
     ),
+
 
   deleteUser: (
     userId: string
@@ -507,21 +824,29 @@ export const api = {
       'POST'
     ),
 
-  // ========================================================
-  // Hadiths
-  // ========================================================
+
+  /**
+   * ========================================================
+   * Hadiths
+   * ========================================================
+   */
 
   getHadiths: () =>
     callApi<{
-      hadiths: import('@/types').Hadith[];
+      hadiths:
+        import('@/types').Hadith[];
     }>(
       'getHadiths',
       {},
       'GET'
     ),
 
+
   addHadith: (
-    hadith: Partial<import('@/types').Hadith>
+    hadith:
+      Partial<
+        import('@/types').Hadith
+      >
   ) =>
     callApi<{
       success: boolean;
@@ -533,9 +858,13 @@ export const api = {
       'POST'
     ),
 
+
   updateHadith: (
     hadithId: string,
-    hadith: Partial<import('@/types').Hadith>
+    hadith:
+      Partial<
+        import('@/types').Hadith
+      >
   ) =>
     callApi<{
       success: boolean;
@@ -547,6 +876,7 @@ export const api = {
       },
       'POST'
     ),
+
 
   deleteHadith: (
     hadithId: string
@@ -561,17 +891,24 @@ export const api = {
       'POST'
     ),
 
-  // ========================================================
-  // Progress
-  // ========================================================
+
+  /**
+   * ========================================================
+   * Progress
+   * ========================================================
+   */
 
   getDailyLessons: (
     courseId?: string
   ) =>
     callApi<{
-      lessons: import('@/types').DailyLesson[];
+      lessons:
+        import('@/types').DailyLesson[];
+
       currentDay: number;
-      course: import('@/types').Course;
+
+      course:
+        import('@/types').Course;
     }>(
       'getDailyLessons',
       {
@@ -579,6 +916,7 @@ export const api = {
       },
       'GET'
     ),
+
 
   saveProgress: (
     hadithId: string,
@@ -600,32 +938,46 @@ export const api = {
       'POST'
     ),
 
+
   getProgressSummary: () =>
     callApi<{
-      summary: import('@/types').StudentProgressSummary;
+      summary:
+        import('@/types')
+          .StudentProgressSummary;
     }>(
       'getProgressSummary',
       {},
       'GET'
     ),
 
-  // ========================================================
-  // Dashboard
-  // ========================================================
+
+  /**
+   * ========================================================
+   * Dashboard
+   * ========================================================
+   */
 
   getDashboard: () =>
     callApi<{
-      stats: import('@/types').DashboardStats;
-      recentActivity: import('@/types').ActivityLog[];
+      stats:
+        import('@/types')
+          .DashboardStats;
+
+      recentActivity:
+        import('@/types')
+          .ActivityLog[];
     }>(
       'getDashboard',
       {},
       'GET'
     ),
 
-  // ========================================================
-  // Profile
-  // ========================================================
+
+  /**
+   * ========================================================
+   * Profile
+   * ========================================================
+   */
 
   updateProfile: (
     updates: Partial<User>
@@ -639,6 +991,7 @@ export const api = {
       },
       'POST'
     ),
+
 
   changePassword: (
     currentPassword: string,
@@ -655,6 +1008,7 @@ export const api = {
       'POST'
     ),
 
+
   resetPassword: (
     userId: string
   ) =>
@@ -668,9 +1022,12 @@ export const api = {
       'POST'
     ),
 
-  // ========================================================
-  // Messages
-  // ========================================================
+
+  /**
+   * ========================================================
+   * Messages
+   * ========================================================
+   */
 
   sendMessage: (
     receiverId: string,
@@ -687,11 +1044,14 @@ export const api = {
       'POST'
     ),
 
+
   getMessages: (
     contactId?: string
   ) =>
     callApi<{
-      messages: import('@/types').Message[];
+      messages:
+        import('@/types').Message[];
+
       contacts: {
         id: string;
         name: string;
@@ -704,6 +1064,7 @@ export const api = {
       },
       'GET'
     ),
+
 
   markMessageRead: (
     messageId: string
@@ -718,17 +1079,23 @@ export const api = {
       'POST'
     ),
 
-  // ========================================================
-  // Notifications
-  // ========================================================
+
+  /**
+   * ========================================================
+   * Notifications
+   * ========================================================
+   */
 
   sendNotification: (
     targetRole:
       | UserRole
       | 'all'
       | 'group',
+
     title: string,
+
     content: string,
+
     targetUserId?: string
   ) =>
     callApi<{
@@ -744,14 +1111,17 @@ export const api = {
       'POST'
     ),
 
+
   getNotifications: () =>
     callApi<{
-      notifications: import('@/types').Notification[];
+      notifications:
+        import('@/types').Notification[];
     }>(
       'getNotifications',
       {},
       'GET'
     ),
+
 
   markNotificationRead: (
     notificationId: string
@@ -766,16 +1136,20 @@ export const api = {
       'POST'
     ),
 
-  // ========================================================
-  // Certificates
-  // ========================================================
+
+  /**
+   * ========================================================
+   * Certificates
+   * ========================================================
+   */
 
   issueCertificate: (
     userId: string,
     courseId: string
   ) =>
     callApi<{
-      certificate: import('@/types').Certificate;
+      certificate:
+        import('@/types').Certificate;
     }>(
       'issueCertificate',
       {
@@ -785,11 +1159,13 @@ export const api = {
       'POST'
     ),
 
+
   getCertificates: (
     userId?: string
   ) =>
     callApi<{
-      certificates: import('@/types').Certificate[];
+      certificates:
+        import('@/types').Certificate[];
     }>(
       'getCertificates',
       {
@@ -798,23 +1174,29 @@ export const api = {
       'GET'
     ),
 
-  // ========================================================
-  // Settings
-  // ========================================================
+
+  /**
+   * ========================================================
+   * Settings
+   * ========================================================
+   */
 
   getSettings: () =>
     callApi<{
-      settings: import('@/types').SiteSettings;
+      settings:
+        import('@/types').SiteSettings;
     }>(
       'getSettings',
       {},
       'GET'
     ),
 
+
   updateSettings: (
-    settings: Partial<
-      import('@/types').SiteSettings
-    >
+    settings:
+      Partial<
+        import('@/types').SiteSettings
+      >
   ) =>
     callApi<{
       success: boolean;
@@ -826,24 +1208,30 @@ export const api = {
       'POST'
     ),
 
-  // ========================================================
-  // Courses
-  // ========================================================
+
+  /**
+   * ========================================================
+   * Courses
+   * ========================================================
+   */
 
   getCourses: () =>
     callApi<{
-      courses: import('@/types').Course[];
+      courses:
+        import('@/types').Course[];
     }>(
       'getCourses',
       {},
       'GET'
     ),
 
+
   startNewCourse: (
     name: string
   ) =>
     callApi<{
-      course: import('@/types').Course;
+      course:
+        import('@/types').Course;
     }>(
       'startNewCourse',
       {
@@ -852,31 +1240,40 @@ export const api = {
       'POST'
     ),
 
-  // ========================================================
-  // Activity Log
-  // ========================================================
+
+  /**
+   * ========================================================
+   * Activity Log
+   * ========================================================
+   */
 
   getActivityLog: () =>
     callApi<{
-      logs: import('@/types').ActivityLog[];
+      logs:
+        import('@/types').ActivityLog[];
     }>(
       'getActivityLog',
       {},
       'GET'
     ),
 
-  // ========================================================
-  // Backup
-  // ========================================================
+
+  /**
+   * ========================================================
+   * Backup
+   * ========================================================
+   */
 
   backupDatabase: () =>
     callApi<{
-      backup: import('@/types').BackupRecord;
+      backup:
+        import('@/types').BackupRecord;
     }>(
       'backupDatabase',
       {},
       'POST'
     ),
+
 
   restoreBackup: (
     backupId: string
@@ -891,31 +1288,40 @@ export const api = {
       'POST'
     ),
 
+
   getBackups: () =>
     callApi<{
-      backups: import('@/types').BackupRecord[];
+      backups:
+        import('@/types').BackupRecord[];
     }>(
       'getBackups',
       {},
       'GET'
     ),
 
-  // ========================================================
-  // Files
-  // ========================================================
+
+  /**
+   * ========================================================
+   * Files
+   * ========================================================
+   */
 
   getFiles: () =>
     callApi<{
-      files: import('@/types').FileItem[];
+      files:
+        import('@/types').FileItem[];
     }>(
       'getFiles',
       {},
       'POST'
     ),
 
-  // ========================================================
-  // Admin management
-  // ========================================================
+
+  /**
+   * ========================================================
+   * Admin
+   * ========================================================
+   */
 
   addSupervisor: (
     name: string,
@@ -936,6 +1342,7 @@ export const api = {
       'POST'
     ),
 
+
   addAdmin: (
     name: string,
     email: string,
@@ -955,9 +1362,12 @@ export const api = {
       'POST'
     ),
 
-  // ========================================================
-  // Setup
-  // ========================================================
+
+  /**
+   * ========================================================
+   * Setup
+   * ========================================================
+   */
 
   setupSheets: () =>
     callApi<{
