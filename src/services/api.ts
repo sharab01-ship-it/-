@@ -1,55 +1,34 @@
-import type {
-  Session,
-  User,
-  UserRole,
-} from '@/types';
+import type { Session, User, UserRole } from '@/types';
 
 /**
- * ==========================================================
- * زاد الحلقات - API Service
- * ==========================================================
- *
- * هذا الإصدار مخصص لتشخيص مشكلة الاتصال مع Google Apps Script.
- *
- * بما أن:
- *   GET  → يعمل
- *   POST → Failed to fetch
- *
- * يتم استخدام GET حاليًا لجميع العمليات.
- *
- * ملاحظة أمنية:
- * لا تعتمد هذا الإصدار كحل إنتاجي نهائي لأن بيانات تسجيل
- * الدخول ستكون ضمن Query String.
- *
- * بعد التأكد من نجاح الاتصال سنعيد تصميم POST بطريقة آمنة.
- */
-
-
-/**
- * ==========================================================
+ * ============================================================
  * Google Apps Script URL
- * ==========================================================
+ * ============================================================
+ *
+ * في Vercel يجب أن يكون:
+ *
+ * VITE_APPS_SCRIPT_URL=https://script.google.com/macros/s/XXXXX/exec
+ *
+ * بدون:
+ *
+ * ?action=test
+ *
+ * ============================================================
  */
 
 const APPS_SCRIPT_URL =
-  (
-    import.meta.env.VITE_APPS_SCRIPT_URL as
-      | string
-      | undefined
-  )?.trim() || '';
-
+  (import.meta.env.VITE_APPS_SCRIPT_URL as string | undefined)?.trim() || '';
 
 const REQUEST_TIMEOUT = 30000;
-
 
 const SESSION_STORAGE_KEY =
   'zad_al_halaqat_session';
 
 
 /**
- * ==========================================================
+ * ============================================================
  * ApiError
- * ==========================================================
+ * ============================================================
  */
 
 export class ApiError extends Error {
@@ -63,34 +42,37 @@ export class ApiError extends Error {
     super(message);
 
     this.name = 'ApiError';
+
   }
+
 }
 
 
 /**
- * ==========================================================
+ * ============================================================
  * ApiResponse
- * ==========================================================
+ * ============================================================
  */
 
 export interface ApiResponse<T> {
 
   success: boolean;
 
-  data?: T;
+  data?: T | null;
 
   message?: string;
 
   error?: string;
 
   code?: string;
+
 }
 
 
 /**
- * ==========================================================
+ * ============================================================
  * Session
- * ==========================================================
+ * ============================================================
  */
 
 export function getStoredSession(): Session | null {
@@ -102,16 +84,12 @@ export function getStoredSession(): Session | null {
         SESSION_STORAGE_KEY
       );
 
-
     if (!raw) {
-
       return null;
     }
 
-
     const session =
       JSON.parse(raw) as Session;
-
 
     if (
       !session ||
@@ -125,7 +103,6 @@ export function getStoredSession(): Session | null {
       return null;
     }
 
-
     if (
       Date.now() >
       session.expiresAt
@@ -138,31 +115,25 @@ export function getStoredSession(): Session | null {
       return null;
     }
 
-
     return session;
 
-  } catch (error) {
-
-    console.error(
-      '[زاد الحلقات] قراءة الجلسة فشلت:',
-      error
-    );
-
+  } catch {
 
     sessionStorage.removeItem(
       SESSION_STORAGE_KEY
     );
 
-
     return null;
+
   }
+
 }
 
 
 /**
- * ==========================================================
+ * ============================================================
  * Store Session
- * ==========================================================
+ * ============================================================
  */
 
 export function storeSession(
@@ -173,13 +144,14 @@ export function storeSession(
     SESSION_STORAGE_KEY,
     JSON.stringify(session)
   );
+
 }
 
 
 /**
- * ==========================================================
+ * ============================================================
  * Clear Session
- * ==========================================================
+ * ============================================================
  */
 
 export function clearStoredSession(): void {
@@ -187,93 +159,88 @@ export function clearStoredSession(): void {
   sessionStorage.removeItem(
     SESSION_STORAGE_KEY
   );
+
 }
 
 
 /**
- * ==========================================================
+ * ============================================================
  * Configuration
- * ==========================================================
+ * ============================================================
  */
 
 export function isConfigured(): boolean {
 
   if (!APPS_SCRIPT_URL) {
-
     return false;
   }
-
 
   try {
 
     const url =
-      new URL(
-        APPS_SCRIPT_URL
-      );
-
+      new URL(APPS_SCRIPT_URL);
 
     return (
       url.protocol === 'https:' &&
-      url.hostname ===
-        'script.google.com' &&
-      url.pathname.startsWith(
-        '/macros/s/'
-      ) &&
-      url.pathname.endsWith(
-        '/exec'
-      )
+      url.hostname === 'script.google.com' &&
+      url.pathname.includes('/macros/s/')
     );
 
   } catch {
 
     return false;
+
   }
+
 }
 
 
 /**
- * ==========================================================
+ * ============================================================
  * Get Config URL
- * ==========================================================
+ * ============================================================
  */
 
 export function getConfigUrl(): string {
 
   return APPS_SCRIPT_URL;
+
 }
 
 
 /**
- * ==========================================================
- * Active Controllers
- * ==========================================================
+ * ============================================================
+ * Active Requests
+ * ============================================================
  */
 
 const activeControllers =
-  new Map<
-    string,
-    AbortController
-  >();
+  new Map<string, AbortController>();
 
 
 /**
- * ==========================================================
+ * ============================================================
  * Request ID
- * ==========================================================
+ * ============================================================
  */
 
 function generateRequestId(): string {
 
-  return `${Date.now()}-${Math.random()
-    .toString(36)
-    .substring(2, 9)}`;
+  return (
+    Date.now().toString() +
+    '-' +
+    Math.random()
+      .toString(36)
+      .substring(2, 9)
+  );
+
 }
 
 
 /**
- * ==========================================================
- * Errors
- * ==========================================================
+ * ============================================================
+ * Timeout Error
+ * ============================================================
  */
 
 function createTimeoutError(): ApiError {
@@ -282,48 +249,39 @@ function createTimeoutError(): ApiError {
     'انتهت مهلة الاتصال بالخادم. يرجى المحاولة مرة أخرى.',
     'TIMEOUT'
   );
-}
 
-
-function createNetworkError(
-  error?: unknown
-): ApiError {
-
-  let details = '';
-
-
-  if (
-    error instanceof Error
-  ) {
-
-    details =
-      ` | ${error.name}: ${error.message}`;
-  }
-
-
-  console.error(
-    '[زاد الحلقات] Network Error:',
-    error
-  );
-
-
-  console.error(
-    '[زاد الحلقات] Apps Script URL:',
-    APPS_SCRIPT_URL
-  );
-
-
-  return new ApiError(
-    `تعذر الاتصال بخادم Google Apps Script.${details}`,
-    'NETWORK_ERROR'
-  );
 }
 
 
 /**
- * ==========================================================
- * Parse Response
- * ==========================================================
+ * ============================================================
+ * Network Error
+ * ============================================================
+ */
+
+function createNetworkError(
+  originalError?: unknown
+): ApiError {
+
+  const detail =
+    originalError instanceof Error
+      ? originalError.message
+      : '';
+
+  return new ApiError(
+    detail
+      ? `تعذر الاتصال بخادم Google Apps Script. ${detail}`
+      : 'تعذر الاتصال بخادم Google Apps Script. تحقق من رابط Google Apps Script ومن نشره كتطبيق ويب.',
+    'NETWORK_ERROR'
+  );
+
+}
+
+
+/**
+ * ============================================================
+ * Parse JSON
+ * ============================================================
  */
 
 async function parseResponse<T>(
@@ -337,12 +295,11 @@ async function parseResponse<T>(
       'HTTP_ERROR',
       response.status
     );
-  }
 
+  }
 
   const text =
     await response.text();
-
 
   if (
     !text ||
@@ -350,11 +307,11 @@ async function parseResponse<T>(
   ) {
 
     throw new ApiError(
-      'الخادم أعاد استجابة فارغة. تحقق من Google Apps Script.',
+      'الخادم أعاد استجابة فارغة.',
       'EMPTY_RESPONSE'
     );
-  }
 
+  }
 
   try {
 
@@ -370,33 +327,30 @@ async function parseResponse<T>(
         .trim()
         .substring(0, 300);
 
-
-    console.error(
-      '[زاد الحلقات] Invalid JSON:',
-      text
-    );
-
-
     throw new ApiError(
       `استجابة غير صالحة من Google Apps Script: ${preview}`,
       'INVALID_JSON'
     );
+
   }
+
 }
 
 
 /**
- * ==========================================================
- * Process Result
- * ==========================================================
+ * ============================================================
+ * Handle Server Response
+ * ============================================================
  */
 
-function processApiResult<T>(
+function handleApiResponse<T>(
   result: ApiResponse<T>
 ): T {
 
   /**
+   * ----------------------------------------------------------
    * Session expired
+   * ----------------------------------------------------------
    */
 
   if (
@@ -408,16 +362,19 @@ function processApiResult<T>(
 
     clearStoredSession();
 
-
     throw new ApiError(
-      'انتهت الجلسة. يرجى تسجيل الدخول مرة أخرى.',
+      result.message ||
+        'انتهت الجلسة. يرجى تسجيل الدخول مرة أخرى.',
       'SESSION_EXPIRED'
     );
+
   }
 
 
   /**
-   * Permission denied
+   * ----------------------------------------------------------
+   * Permission
+   * ----------------------------------------------------------
    */
 
   if (
@@ -426,17 +383,23 @@ function processApiResult<T>(
   ) {
 
     throw new ApiError(
-      'ليس لديك صلاحية لتنفيذ هذه العملية.',
+      result.message ||
+        'ليس لديك صلاحية لتنفيذ هذه العملية.',
       'PERMISSION_DENIED'
     );
+
   }
 
 
   /**
-   * Server failure
+   * ----------------------------------------------------------
+   * Failed operation
+   * ----------------------------------------------------------
    */
 
-  if (!result.success) {
+  if (
+    result.success !== true
+  ) {
 
     throw new ApiError(
       result.message ||
@@ -445,83 +408,54 @@ function processApiResult<T>(
       result.code ||
         'UNKNOWN_ERROR'
     );
+
   }
 
 
+  /**
+   * ----------------------------------------------------------
+   * Successful response
+   * ----------------------------------------------------------
+   */
+
   return result.data as T;
+
 }
 
 
 /**
- * ==========================================================
- * callApi
- * ==========================================================
- *
- * في هذا الإصدار:
- *
- * GET فقط.
- *
- * السبب:
- * POST من المتصفح إلى Apps Script يعيد:
- *
- * TypeError: Failed to fetch
- *
- * بينما GET يعمل بنجاح.
- *
- * ==========================================================
+ * ============================================================
+ * Main API Request
+ * ============================================================
  */
 
 async function callApi<T>(
   action: string,
-  params: Record<
-    string,
-    unknown
-  > = {},
-  method:
-    | 'GET'
-    | 'POST' = 'GET'
+  params: Record<string, unknown> = {},
+  method: 'GET' | 'POST' = 'POST'
 ): Promise<T> {
 
   /**
-   * --------------------------------------------------------
-   * Configuration
-   * --------------------------------------------------------
+   * ----------------------------------------------------------
+   * Configuration check
+   * ----------------------------------------------------------
    */
 
   if (!isConfigured()) {
 
-    console.error(
-      '[زاد الحلقات] Apps Script غير مهيأ:',
-      APPS_SCRIPT_URL
-    );
-
-
     throw new ApiError(
-      'لم يتم إعداد رابط Google Apps Script بشكل صحيح. تأكد من VITE_APPS_SCRIPT_URL.',
+      'لم يتم إعداد رابط Google Apps Script بشكل صحيح. تحقق من VITE_APPS_SCRIPT_URL في Vercel.',
       'NOT_CONFIGURED'
     );
+
   }
 
-
-  /**
-   * --------------------------------------------------------
-   * Request ID
-   * --------------------------------------------------------
-   */
 
   const requestId =
     generateRequestId();
 
-
-  /**
-   * --------------------------------------------------------
-   * Controller
-   * --------------------------------------------------------
-   */
-
   const controller =
     new AbortController();
-
 
   activeControllers.set(
     requestId,
@@ -529,18 +463,10 @@ async function callApi<T>(
   );
 
 
-  /**
-   * --------------------------------------------------------
-   * Timeout
-   * --------------------------------------------------------
-   */
-
   const timeoutId =
     window.setTimeout(
       () => {
-
         controller.abort();
-
       },
       REQUEST_TIMEOUT
     );
@@ -549,9 +475,9 @@ async function callApi<T>(
   try {
 
     /**
-     * ------------------------------------------------------
-     * Session
-     * ------------------------------------------------------
+     * --------------------------------------------------------
+     * Current session
+     * --------------------------------------------------------
      */
 
     const session =
@@ -559,211 +485,176 @@ async function callApi<T>(
 
 
     /**
-     * ------------------------------------------------------
+     * --------------------------------------------------------
      * Payload
-     * ------------------------------------------------------
+     * --------------------------------------------------------
      */
 
     const payload:
-      Record<
-        string,
-        unknown
-      > = {
+      Record<string, unknown> = {
 
       action,
 
       ...params,
+
     };
 
 
     /**
-     * ------------------------------------------------------
-     * Session credentials
-     * ------------------------------------------------------
+     * --------------------------------------------------------
+     * Add session
+     * --------------------------------------------------------
      */
 
     if (session) {
 
-      if (session.token) {
+      payload.token =
+        session.token;
 
-        payload.token =
-          session.token;
-      }
+      payload.userId =
+        session.userId;
 
-
-      if (session.userId) {
-
-        payload.userId =
-          session.userId;
-      }
     }
+
+
+    let response: Response;
 
 
     /**
-     * ------------------------------------------------------
-     * Debug payload
-     * ------------------------------------------------------
-     */
-
-    const debugPayload = {
-      ...payload,
-    };
-
-
-    /**
-     * لا نطبع كلمات المرور في Console
-     */
-
-    if (
-      'password' in
-      debugPayload
-    ) {
-
-      debugPayload.password =
-        '***';
-    }
-
-
-    if (
-      'currentPassword' in
-      debugPayload
-    ) {
-
-      debugPayload.currentPassword =
-        '***';
-    }
-
-
-    if (
-      'newPassword' in
-      debugPayload
-    ) {
-
-      debugPayload.newPassword =
-        '***';
-    }
-
-
-    console.debug(
-      '[زاد الحلقات] API Request:',
-      {
-        action,
-        method,
-        payload:
-          debugPayload,
-      }
-    );
-
-
-    /**
-     * ======================================================
+     * ========================================================
      * GET
-     * ======================================================
+     * ========================================================
      */
 
-    const url =
-      new URL(
-        APPS_SCRIPT_URL
-      );
+    if (
+      method === 'GET'
+    ) {
+
+      const url =
+        new URL(
+          APPS_SCRIPT_URL
+        );
 
 
-    Object.entries(
-      payload
-    ).forEach(
-      ([key, value]) => {
+      Object.entries(
+        payload
+      ).forEach(
+        ([key, value]) => {
 
-        if (
-          value ===
-            undefined ||
-          value === null
-        ) {
+          if (
+            value !== undefined &&
+            value !== null
+          ) {
 
-          return;
-        }
+            /**
+             * التعامل مع القيم البسيطة
+             */
 
+            if (
+              typeof value === 'object'
+            ) {
 
-        /**
-         * Objects / Arrays
-         */
+              url.searchParams.set(
+                key,
+                JSON.stringify(value)
+              );
 
-        if (
-          typeof value ===
-          'object'
-        ) {
+            } else {
 
-          url.searchParams.set(
-            key,
-            JSON.stringify(
-              value
-            )
-          );
+              url.searchParams.set(
+                key,
+                String(value)
+              );
 
-        } else {
+            }
 
-          url.searchParams.set(
-            key,
-            String(value)
-          );
-        }
-      }
-    );
+          }
 
-
-    console.debug(
-      '[زاد الحلقات] GET URL:',
-      url.toString()
-    );
-
-
-    /**
-     * ======================================================
-     * Fetch
-     * ======================================================
-     */
-
-    const response =
-      await fetch(
-        url.toString(),
-        {
-          method: 'GET',
-
-          signal:
-            controller.signal,
-
-          redirect:
-            'follow',
-
-          credentials:
-            'omit',
-
-          cache:
-            'no-store',
         }
       );
 
 
-    console.debug(
-      '[زاد الحلقات] Response:',
-      {
-        status:
-          response.status,
+      response =
+        await fetch(
+          url.toString(),
+          {
+            method: 'GET',
 
-        statusText:
-          response.statusText,
+            signal:
+              controller.signal,
 
-        redirected:
-          response.redirected,
+            redirect:
+              'follow',
 
-        url:
-          response.url,
-      }
-    );
+            credentials:
+              'omit',
+
+            cache:
+              'no-store',
+
+          }
+        );
+
+    }
 
 
     /**
-     * ======================================================
-     * Parse
-     * ======================================================
+     * ========================================================
+     * POST
+     * ========================================================
+     */
+
+    else {
+
+      /**
+       * مهم:
+       *
+       * نستخدم text/plain
+       * حتى لا يطلب المتصفح
+       * CORS preflight OPTIONS.
+       */
+
+      response =
+        await fetch(
+          APPS_SCRIPT_URL,
+          {
+
+            method: 'POST',
+
+            headers: {
+
+              'Content-Type':
+                'text/plain;charset=utf-8',
+
+            },
+
+            body:
+              JSON.stringify(
+                payload
+              ),
+
+            signal:
+              controller.signal,
+
+            redirect:
+              'follow',
+
+            credentials:
+              'omit',
+
+            cache:
+              'no-store',
+
+          }
+        );
+
+    }
+
+
+    /**
+     * --------------------------------------------------------
+     * Parse response
+     * --------------------------------------------------------
      */
 
     const result =
@@ -772,98 +663,80 @@ async function callApi<T>(
       );
 
 
-    console.debug(
-      '[زاد الحلقات] Result:',
-      result
-    );
-
-
     /**
-     * ======================================================
-     * Process
-     * ======================================================
+     * --------------------------------------------------------
+     * Handle response
+     * --------------------------------------------------------
      */
 
-    return processApiResult(
+    return handleApiResponse<T>(
       result
     );
 
+  }
 
-  } catch (error) {
+
+  /**
+   * ==========================================================
+   * Errors
+   * ==========================================================
+   */
+
+  catch (error) {
 
     /**
-     * ------------------------------------------------------
+     * --------------------------------------------------------
      * ApiError
-     * ------------------------------------------------------
+     * --------------------------------------------------------
      */
 
     if (
       error instanceof ApiError
     ) {
 
-      console.error(
-        '[زاد الحلقات] API Error:',
-        {
-          action,
-          code:
-            error.code,
-          message:
-            error.message,
-          statusCode:
-            error.statusCode,
-        }
-      );
-
-
       throw error;
+
     }
 
 
     /**
-     * ------------------------------------------------------
+     * --------------------------------------------------------
      * Timeout
-     * ------------------------------------------------------
+     * --------------------------------------------------------
      */
 
     if (
-      error instanceof
-        DOMException &&
-      error.name ===
-        'AbortError'
+      error instanceof DOMException &&
+      error.name === 'AbortError'
     ) {
 
       throw createTimeoutError();
+
     }
 
 
     /**
-     * ------------------------------------------------------
-     * Network
-     * ------------------------------------------------------
+     * --------------------------------------------------------
+     * Failed fetch
+     * --------------------------------------------------------
      */
 
     if (
-      error instanceof
-      TypeError
+      error instanceof TypeError
     ) {
 
       throw createNetworkError(
         error
       );
+
     }
 
 
     /**
-     * ------------------------------------------------------
-     * Unknown
-     * ------------------------------------------------------
+     * --------------------------------------------------------
+     * Unknown error
+     * --------------------------------------------------------
      */
-
-    console.error(
-      '[زاد الحلقات] Unknown API Error:',
-      error
-    );
-
 
     throw new ApiError(
       error instanceof Error
@@ -872,25 +745,34 @@ async function callApi<T>(
       'UNKNOWN_ERROR'
     );
 
+  }
 
-  } finally {
+
+  /**
+   * ==========================================================
+   * Finally
+   * ==========================================================
+   */
+
+  finally {
 
     window.clearTimeout(
       timeoutId
     );
 
-
     activeControllers.delete(
       requestId
     );
+
   }
+
 }
 
 
 /**
- * ==========================================================
+ * ============================================================
  * Cancel Requests
- * ==========================================================
+ * ============================================================
  */
 
 export function cancelAllRequests(): void {
@@ -899,34 +781,30 @@ export function cancelAllRequests(): void {
     (controller) => {
 
       controller.abort();
+
     }
   );
 
-
   activeControllers.clear();
+
 }
 
 
 /**
- * ==========================================================
+ * ============================================================
  * API
- * ==========================================================
+ * ============================================================
  */
 
 export const api = {
 
-  /**
-   * ========================================================
-   * Connection Test
-   * ========================================================
-   */
+  // ==========================================================
+  // TEST
+  // ==========================================================
 
   testConnection: () =>
     callApi<{
       status: string;
-      service: string;
-      method: string;
-      timestamp: string;
     }>(
       'test',
       {},
@@ -934,11 +812,9 @@ export const api = {
     ),
 
 
-  /**
-   * ========================================================
-   * Authentication
-   * ========================================================
-   */
+  // ==========================================================
+  // AUTH
+  // ==========================================================
 
   login: (
     email: string,
@@ -953,7 +829,7 @@ export const api = {
         email,
         password,
       },
-      'GET'
+      'POST'
     ),
 
 
@@ -973,7 +849,7 @@ export const api = {
         phone,
         password,
       },
-      'GET'
+      'POST'
     ),
 
 
@@ -993,25 +869,22 @@ export const api = {
     }>(
       'logout',
       {},
-      'GET'
+      'POST'
     ),
 
 
-  /**
-   * ========================================================
-   * Students / Registration
-   * ========================================================
-   */
+  // ==========================================================
+  // STUDENTS
+  // ==========================================================
 
   getRegistrationRequests: () =>
     callApi<{
       requests:
-        import('@/types')
-          .RegistrationRequest[];
+        import('@/types').RegistrationRequest[];
     }>(
       'getRegistrationRequests',
       {},
-      'GET'
+      'POST'
     ),
 
 
@@ -1025,7 +898,7 @@ export const api = {
       {
         studentId,
       },
-      'GET'
+      'POST'
     ),
 
 
@@ -1041,7 +914,7 @@ export const api = {
         studentId,
         reason,
       },
-      'GET'
+      'POST'
     ),
 
 
@@ -1055,7 +928,7 @@ export const api = {
       {
         studentId,
       },
-      'GET'
+      'POST'
     ),
 
 
@@ -1069,7 +942,7 @@ export const api = {
       {
         studentId,
       },
-      'GET'
+      'POST'
     ),
 
 
@@ -1079,7 +952,7 @@ export const api = {
     }>(
       'getStudents',
       {},
-      'GET'
+      'POST'
     ),
 
 
@@ -1089,7 +962,7 @@ export const api = {
     }>(
       'getUsers',
       {},
-      'GET'
+      'POST'
     ),
 
 
@@ -1103,15 +976,13 @@ export const api = {
       {
         userId,
       },
-      'GET'
+      'POST'
     ),
 
 
-  /**
-   * ========================================================
-   * Hadiths
-   * ========================================================
-   */
+  // ==========================================================
+  // HADITHS
+  // ==========================================================
 
   getHadiths: () =>
     callApi<{
@@ -1137,7 +1008,7 @@ export const api = {
       {
         hadith,
       },
-      'GET'
+      'POST'
     ),
 
 
@@ -1156,7 +1027,7 @@ export const api = {
         hadithId,
         hadith,
       },
-      'GET'
+      'POST'
     ),
 
 
@@ -1170,15 +1041,13 @@ export const api = {
       {
         hadithId,
       },
-      'GET'
+      'POST'
     ),
 
 
-  /**
-   * ========================================================
-   * Progress
-   * ========================================================
-   */
+  // ==========================================================
+  // PROGRESS
+  // ==========================================================
 
   getDailyLessons: (
     courseId?: string
@@ -1187,10 +1056,12 @@ export const api = {
       lessons:
         import('@/types').DailyLesson[];
 
-      currentDay: number;
+      currentDay:
+        number;
 
       course:
         import('@/types').Course;
+
     }>(
       'getDailyLessons',
       {
@@ -1217,15 +1088,14 @@ export const api = {
         field,
         value,
       },
-      'GET'
+      'POST'
     ),
 
 
   getProgressSummary: () =>
     callApi<{
       summary:
-        import('@/types')
-          .StudentProgressSummary;
+        import('@/types').StudentProgressSummary;
     }>(
       'getProgressSummary',
       {},
@@ -1233,21 +1103,18 @@ export const api = {
     ),
 
 
-  /**
-   * ========================================================
-   * Dashboard
-   * ========================================================
-   */
+  // ==========================================================
+  // DASHBOARD
+  // ==========================================================
 
   getDashboard: () =>
     callApi<{
       stats:
-        import('@/types')
-          .DashboardStats;
+        import('@/types').DashboardStats;
 
       recentActivity:
-        import('@/types')
-          .ActivityLog[];
+        import('@/types').ActivityLog[];
+
     }>(
       'getDashboard',
       {},
@@ -1255,11 +1122,9 @@ export const api = {
     ),
 
 
-  /**
-   * ========================================================
-   * Profile
-   * ========================================================
-   */
+  // ==========================================================
+  // PROFILE
+  // ==========================================================
 
   updateProfile: (
     updates: Partial<User>
@@ -1271,7 +1136,7 @@ export const api = {
       {
         updates,
       },
-      'GET'
+      'POST'
     ),
 
 
@@ -1287,7 +1152,7 @@ export const api = {
         currentPassword,
         newPassword,
       },
-      'GET'
+      'POST'
     ),
 
 
@@ -1301,15 +1166,13 @@ export const api = {
       {
         userId,
       },
-      'GET'
+      'POST'
     ),
 
 
-  /**
-   * ========================================================
-   * Messages
-   * ========================================================
-   */
+  // ==========================================================
+  // MESSAGES
+  // ==========================================================
 
   sendMessage: (
     receiverId: string,
@@ -1323,7 +1186,7 @@ export const api = {
         receiverId,
         content,
       },
-      'GET'
+      'POST'
     ),
 
 
@@ -1339,6 +1202,7 @@ export const api = {
         name: string;
         role: UserRole;
       }[];
+
     }>(
       'getMessages',
       {
@@ -1358,23 +1222,24 @@ export const api = {
       {
         messageId,
       },
-      'GET'
+      'POST'
     ),
 
 
-  /**
-   * ========================================================
-   * Notifications
-   * ========================================================
-   */
+  // ==========================================================
+  // NOTIFICATIONS
+  // ==========================================================
 
   sendNotification: (
     targetRole:
       | UserRole
       | 'all'
       | 'group',
+
     title: string,
+
     content: string,
+
     targetUserId?: string
   ) =>
     callApi<{
@@ -1387,7 +1252,7 @@ export const api = {
         content,
         targetUserId,
       },
-      'GET'
+      'POST'
     ),
 
 
@@ -1412,15 +1277,13 @@ export const api = {
       {
         notificationId,
       },
-      'GET'
+      'POST'
     ),
 
 
-  /**
-   * ========================================================
-   * Certificates
-   * ========================================================
-   */
+  // ==========================================================
+  // CERTIFICATES
+  // ==========================================================
 
   issueCertificate: (
     userId: string,
@@ -1435,7 +1298,7 @@ export const api = {
         userId,
         courseId,
       },
-      'GET'
+      'POST'
     ),
 
 
@@ -1454,11 +1317,9 @@ export const api = {
     ),
 
 
-  /**
-   * ========================================================
-   * Settings
-   * ========================================================
-   */
+  // ==========================================================
+  // SETTINGS
+  // ==========================================================
 
   getSettings: () =>
     callApi<{
@@ -1484,15 +1345,13 @@ export const api = {
       {
         settings,
       },
-      'GET'
+      'POST'
     ),
 
 
-  /**
-   * ========================================================
-   * Courses
-   * ========================================================
-   */
+  // ==========================================================
+  // COURSES
+  // ==========================================================
 
   getCourses: () =>
     callApi<{
@@ -1516,15 +1375,13 @@ export const api = {
       {
         name,
       },
-      'GET'
+      'POST'
     ),
 
 
-  /**
-   * ========================================================
-   * Activity Log
-   * ========================================================
-   */
+  // ==========================================================
+  // ACTIVITY LOG
+  // ==========================================================
 
   getActivityLog: () =>
     callApi<{
@@ -1537,11 +1394,9 @@ export const api = {
     ),
 
 
-  /**
-   * ========================================================
-   * Backup
-   * ========================================================
-   */
+  // ==========================================================
+  // BACKUP
+  // ==========================================================
 
   backupDatabase: () =>
     callApi<{
@@ -1550,7 +1405,7 @@ export const api = {
     }>(
       'backupDatabase',
       {},
-      'GET'
+      'POST'
     ),
 
 
@@ -1564,7 +1419,7 @@ export const api = {
       {
         backupId,
       },
-      'GET'
+      'POST'
     ),
 
 
@@ -1579,11 +1434,9 @@ export const api = {
     ),
 
 
-  /**
-   * ========================================================
-   * Files
-   * ========================================================
-   */
+  // ==========================================================
+  // FILES
+  // ==========================================================
 
   getFiles: () =>
     callApi<{
@@ -1592,15 +1445,13 @@ export const api = {
     }>(
       'getFiles',
       {},
-      'GET'
+      'POST'
     ),
 
 
-  /**
-   * ========================================================
-   * Admin
-   * ========================================================
-   */
+  // ==========================================================
+  // ADMIN
+  // ==========================================================
 
   addSupervisor: (
     name: string,
@@ -1618,7 +1469,7 @@ export const api = {
         phone,
         password,
       },
-      'GET'
+      'POST'
     ),
 
 
@@ -1638,15 +1489,13 @@ export const api = {
         phone,
         password,
       },
-      'GET'
+      'POST'
     ),
 
 
-  /**
-   * ========================================================
-   * Setup
-   * ========================================================
-   */
+  // ==========================================================
+  // SETUP
+  // ==========================================================
 
   setupSheets: () =>
     callApi<{
@@ -1655,6 +1504,7 @@ export const api = {
     }>(
       'setupSheets',
       {},
-      'GET'
+      'POST'
     ),
+
 };
