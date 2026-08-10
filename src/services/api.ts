@@ -1,6 +1,8 @@
 import type { Session, User, UserRole } from '@/types';
 
-const APPS_SCRIPT_URL = import.meta.env.VITE_APPS_SCRIPT_URL as string;
+const APPS_SCRIPT_URL =
+  (import.meta.env.VITE_APPS_SCRIPT_URL as string | undefined)?.trim() || '';
+
 const REQUEST_TIMEOUT = 30000;
 
 export class ApiError extends Error {
@@ -17,7 +19,7 @@ export class ApiError extends Error {
 export interface ApiResponse<T> {
   success: boolean;
   data?: T;
-  message: string;
+  message?: string;
   error?: string;
   code?: string;
 }
@@ -34,6 +36,11 @@ export function getStoredSession(): Session | null {
 
     const session = JSON.parse(raw) as Session;
 
+    if (!session || !session.expiresAt) {
+      sessionStorage.removeItem(SESSION_STORAGE_KEY);
+      return null;
+    }
+
     if (Date.now() > session.expiresAt) {
       sessionStorage.removeItem(SESSION_STORAGE_KEY);
       return null;
@@ -41,6 +48,7 @@ export function getStoredSession(): Session | null {
 
     return session;
   } catch {
+    sessionStorage.removeItem(SESSION_STORAGE_KEY);
     return null;
   }
 }
@@ -59,18 +67,36 @@ export function clearStoredSession(): void {
 export function isConfigured(): boolean {
   return Boolean(
     APPS_SCRIPT_URL &&
-    APPS_SCRIPT_URL.startsWith('https://')
+    /^https:\/\/script\.google\.com\/macros\/s\/.+\/exec(?:\?.*)?$/.test(
+      APPS_SCRIPT_URL
+    )
   );
 }
 
 export function getConfigUrl(): string {
-  return APPS_SCRIPT_URL || '';
+  return APPS_SCRIPT_URL;
 }
 
 const activeControllers = new Map<string, AbortController>();
 
 function generateRequestId(): string {
-  return `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+  return `${Date.now()}-${Math.random()
+    .toString(36)
+    .substring(2, 9)}`;
+}
+
+function createTimeoutError(): ApiError {
+  return new ApiError(
+    'انتهت مهلة الاتصال بالخادم. يرجى المحاولة مرة أخرى.',
+    'TIMEOUT'
+  );
+}
+
+function createNetworkError(): ApiError {
+  return new ApiError(
+    'تعذر الاتصال بخادم Google Apps Script. تحقق من رابط Google Apps Script ومن نشره كتطبيق ويب.',
+    'NETWORK_ERROR'
+  );
 }
 
 async function callApi<T>(
@@ -80,25 +106,29 @@ async function callApi<T>(
 ): Promise<T> {
   if (!isConfigured()) {
     throw new ApiError(
-      'لم يتم إعداد رابط Google Apps Script. يرجى إضافة VITE_APPS_SCRIPT_URL في إعدادات البيئة.',
+      'لم يتم إعداد رابط Google Apps Script بشكل صحيح. تأكد من VITE_APPS_SCRIPT_URL في إعدادات Vercel.',
       'NOT_CONFIGURED'
     );
   }
 
   const requestId = generateRequestId();
+
   const controller = new AbortController();
 
-  activeControllers.set(requestId, controller);
-
-  const timeoutId = setTimeout(
-    () => controller.abort(),
-    REQUEST_TIMEOUT
+  activeControllers.set(
+    requestId,
+    controller
   );
+
+  const timeoutId = window.setTimeout(() => {
+    controller.abort();
+  }, REQUEST_TIMEOUT);
 
   try {
     const session = getStoredSession();
 
     const payload: Record<string, unknown> = {
+      action,
       ...params,
     };
 
@@ -109,45 +139,75 @@ async function callApi<T>(
 
     let response: Response;
 
+    /**
+     * ======================================================
+     * GET
+     * ======================================================
+     */
     if (method === 'GET') {
       const url = new URL(APPS_SCRIPT_URL);
 
-      url.searchParams.set('action', action);
-
-      Object.entries(payload).forEach(([key, value]) => {
-        if (
-          value !== undefined &&
-          value !== null
-        ) {
-          url.searchParams.set(key, String(value));
+      Object.entries(payload).forEach(
+        ([key, value]) => {
+          if (value !== undefined && value !== null) {
+            url.searchParams.set(
+              key,
+              String(value)
+            );
+          }
         }
-      });
+      );
 
-      response = await fetch(url.toString(), {
-        method: 'GET',
-        signal: controller.signal,
-        redirect: 'follow',
-      });
-    } else {
-      response = await fetch(APPS_SCRIPT_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'text/plain;charset=utf-8',
-        },
-        body: JSON.stringify({
-          action,
-          ...payload,
-        }),
-        signal: controller.signal,
-        redirect: 'follow',
-      });
+      response = await fetch(
+        url.toString(),
+        {
+          method: 'GET',
+          signal: controller.signal,
+          redirect: 'follow',
+          credentials: 'omit',
+          cache: 'no-store',
+        }
+      );
     }
 
-    clearTimeout(timeoutId);
+    /**
+     * ======================================================
+     * POST
+     * ======================================================
+     */
+    else {
+      response = await fetch(
+        APPS_SCRIPT_URL,
+        {
+          method: 'POST',
+
+          /*
+           * مهم:
+           * نستخدم text/plain حتى لا يرسل المتصفح
+           * طلب CORS preflight OPTIONS غير المدعوم
+           * عادةً من Google Apps Script Web App.
+           */
+          headers: {
+            'Content-Type':
+              'text/plain;charset=utf-8',
+          },
+
+          body: JSON.stringify(payload),
+
+          signal: controller.signal,
+
+          redirect: 'follow',
+
+          credentials: 'omit',
+
+          cache: 'no-store',
+        }
+      );
+    }
 
     if (!response.ok) {
       throw new ApiError(
-        `خطأ في الخادم (${response.status})`,
+        `خطأ في خادم Google Apps Script (${response.status}).`,
         'HTTP_ERROR',
         response.status
       );
@@ -155,17 +215,38 @@ async function callApi<T>(
 
     const text = await response.text();
 
+    if (!text || !text.trim()) {
+      throw new ApiError(
+        'الخادم أعاد استجابة فارغة. تحقق من Google Apps Script.',
+        'EMPTY_RESPONSE'
+      );
+    }
+
     let result: ApiResponse<T>;
 
     try {
       result = JSON.parse(text) as ApiResponse<T>;
     } catch {
+      /*
+       * عرض جزء من الاستجابة يساعد في تشخيص
+       * صفحات الخطأ التي قد يعيدها Apps Script.
+       */
+      const preview = text
+        .replace(/\s+/g, ' ')
+        .trim()
+        .substring(0, 200);
+
       throw new ApiError(
-        'استجابة غير صالحة من الخادم. تأكد من نشر Google Apps Script بشكل صحيح.',
+        `استجابة غير صالحة من Google Apps Script: ${preview}`,
         'INVALID_JSON'
       );
     }
 
+    /**
+     * ======================================================
+     * انتهاء الجلسة
+     * ======================================================
+     */
     if (
       result.code === 'SESSION_EXPIRED' ||
       result.code === 'INVALID_SESSION'
@@ -178,81 +259,118 @@ async function callApi<T>(
       );
     }
 
-    if (result.code === 'PERMISSION_DENIED') {
+    /**
+     * ======================================================
+     * عدم وجود صلاحية
+     * ======================================================
+     */
+    if (
+      result.code === 'PERMISSION_DENIED'
+    ) {
       throw new ApiError(
         'ليس لديك صلاحية لتنفيذ هذه العملية.',
         'PERMISSION_DENIED'
       );
     }
 
+    /**
+     * ======================================================
+     * فشل العملية من الخادم
+     * ======================================================
+     */
     if (!result.success) {
       throw new ApiError(
         result.message ||
           result.error ||
-          'حدث خطأ غير متوقع',
-        result.code || 'UNKNOWN_ERROR'
+          'حدث خطأ غير متوقع في الخادم.',
+        result.code ||
+          'UNKNOWN_ERROR'
       );
     }
 
     return result.data as T;
-
   } catch (error) {
+    /**
+     * إذا كان الخطأ ApiError
+     * نعيده كما هو.
+     */
     if (error instanceof ApiError) {
       throw error;
     }
 
+    /**
+     * Timeout
+     */
     if (
       error instanceof DOMException &&
       error.name === 'AbortError'
     ) {
-      throw new ApiError(
-        'انتهت مهلة الطلب. يرجى المحاولة مرة أخرى.',
-        'TIMEOUT'
-      );
+      throw createTimeoutError();
     }
 
+    /**
+     * بعض المتصفحات قد تستخدم TypeError
+     * عند فشل fetch.
+     */
     if (
-      error instanceof TypeError &&
-      error.message.includes('Failed to fetch')
+      error instanceof TypeError
     ) {
-      throw new ApiError(
-        'تعذر الاتصال بالخادم. تحقق من اتصال الإنترنت وإعداد رابط Google Apps Script.',
-        'NETWORK_ERROR'
+      return Promise.reject(
+        createNetworkError()
       );
     }
 
     throw new ApiError(
       error instanceof Error
         ? error.message
-        : 'حدث خطأ غير متوقع',
+        : 'حدث خطأ غير متوقع.',
       'UNKNOWN_ERROR'
     );
-
   } finally {
-    clearTimeout(timeoutId);
-    activeControllers.delete(requestId);
+    window.clearTimeout(timeoutId);
+
+    activeControllers.delete(
+      requestId
+    );
   }
 }
 
 export function cancelAllRequests(): void {
-  activeControllers.forEach((controller) => {
-    controller.abort();
-  });
+  activeControllers.forEach(
+    (controller) => {
+      controller.abort();
+    }
+  );
 
   activeControllers.clear();
 }
 
+/**
+ * ==========================================================
+ * API
+ * ==========================================================
+ */
 export const api = {
-  // Auth
 
-  login: (email: string, password: string) =>
+  // ========================================================
+  // Auth
+  // ========================================================
+
+  login: (
+    email: string,
+    password: string
+  ) =>
     callApi<{
       session: Session;
       user: User;
-    }>('login', {
-      email,
-      password,
-    }),
+    }>(
+      'login',
+      {
+        email,
+        password,
+      },
+      'POST'
+    ),
 
   register: (
     name: string,
@@ -262,36 +380,60 @@ export const api = {
   ) =>
     callApi<{
       success: boolean;
-    }>('register', {
-      name,
-      email,
-      phone,
-      password,
-    }),
+    }>(
+      'register',
+      {
+        name,
+        email,
+        phone,
+        password,
+      },
+      'POST'
+    ),
 
   verifySession: () =>
     callApi<{
       user: User;
-    }>('verifySession', {}, 'GET'),
+    }>(
+      'verifySession',
+      {},
+      'GET'
+    ),
 
   logout: () =>
     callApi<{
       success: boolean;
-    }>('logout'),
+    }>(
+      'logout',
+      {},
+      'POST'
+    ),
 
+  // ========================================================
   // Students / Registration
+  // ========================================================
 
   getRegistrationRequests: () =>
     callApi<{
       requests: import('@/types').RegistrationRequest[];
-    }>('getRegistrationRequests'),
+    }>(
+      'getRegistrationRequests',
+      {},
+      'POST'
+    ),
 
-  approveStudent: (studentId: string) =>
+  approveStudent: (
+    studentId: string
+  ) =>
     callApi<{
       success: boolean;
-    }>('approveStudent', {
-      studentId,
-    }),
+    }>(
+      'approveStudent',
+      {
+        studentId,
+      },
+      'POST'
+    ),
 
   rejectStudent: (
     studentId: string,
@@ -299,57 +441,97 @@ export const api = {
   ) =>
     callApi<{
       success: boolean;
-    }>('rejectStudent', {
-      studentId,
-      reason,
-    }),
+    }>(
+      'rejectStudent',
+      {
+        studentId,
+        reason,
+      },
+      'POST'
+    ),
 
-  suspendStudent: (studentId: string) =>
+  suspendStudent: (
+    studentId: string
+  ) =>
     callApi<{
       success: boolean;
-    }>('suspendStudent', {
-      studentId,
-    }),
+    }>(
+      'suspendStudent',
+      {
+        studentId,
+      },
+      'POST'
+    ),
 
-  unsuspendStudent: (studentId: string) =>
+  unsuspendStudent: (
+    studentId: string
+  ) =>
     callApi<{
       success: boolean;
-    }>('unsuspendStudent', {
-      studentId,
-    }),
+    }>(
+      'unsuspendStudent',
+      {
+        studentId,
+      },
+      'POST'
+    ),
 
   getStudents: () =>
     callApi<{
       students: User[];
-    }>('getStudents'),
+    }>(
+      'getStudents',
+      {},
+      'POST'
+    ),
 
   getUsers: () =>
     callApi<{
       users: User[];
-    }>('getUsers'),
+    }>(
+      'getUsers',
+      {},
+      'POST'
+    ),
 
-  deleteUser: (userId: string) =>
+  deleteUser: (
+    userId: string
+  ) =>
     callApi<{
       success: boolean;
-    }>('deleteUser', {
-      userId,
-    }),
+    }>(
+      'deleteUser',
+      {
+        userId,
+      },
+      'POST'
+    ),
 
+  // ========================================================
   // Hadiths
+  // ========================================================
 
   getHadiths: () =>
     callApi<{
       hadiths: import('@/types').Hadith[];
-    }>('getHadiths', {}, 'GET'),
+    }>(
+      'getHadiths',
+      {},
+      'GET'
+    ),
 
   addHadith: (
     hadith: Partial<import('@/types').Hadith>
   ) =>
     callApi<{
       success: boolean;
-    }>('addHadith', {
-      hadith,
-    }),
+    }>(
+      'addHadith',
+      {
+        hadith,
+      },
+      'POST'
+    ),
 
   updateHadith: (
     hadithId: string,
@@ -357,50 +539,79 @@ export const api = {
   ) =>
     callApi<{
       success: boolean;
-    }>('updateHadith', {
-      hadithId,
-      hadith,
-    }),
+    }>(
+      'updateHadith',
+      {
+        hadithId,
+        hadith,
+      },
+      'POST'
+    ),
 
-  deleteHadith: (hadithId: string) =>
+  deleteHadith: (
+    hadithId: string
+  ) =>
     callApi<{
       success: boolean;
-    }>('deleteHadith', {
-      hadithId,
-    }),
+    }>(
+      'deleteHadith',
+      {
+        hadithId,
+      },
+      'POST'
+    ),
 
+  // ========================================================
   // Progress
+  // ========================================================
 
-  getDailyLessons: (courseId?: string) =>
+  getDailyLessons: (
+    courseId?: string
+  ) =>
     callApi<{
       lessons: import('@/types').DailyLesson[];
       currentDay: number;
       course: import('@/types').Course;
     }>(
       'getDailyLessons',
-      { courseId },
+      {
+        courseId,
+      },
       'GET'
     ),
 
   saveProgress: (
     hadithId: string,
-    field: 'memorized' | 'listened' | 'read',
+    field:
+      | 'memorized'
+      | 'listened'
+      | 'read',
     value: boolean
   ) =>
     callApi<{
       success: boolean;
-    }>('saveProgress', {
-      hadithId,
-      field,
-      value,
-    }),
+    }>(
+      'saveProgress',
+      {
+        hadithId,
+        field,
+        value,
+      },
+      'POST'
+    ),
 
   getProgressSummary: () =>
     callApi<{
       summary: import('@/types').StudentProgressSummary;
-    }>('getProgressSummary', {}, 'GET'),
+    }>(
+      'getProgressSummary',
+      {},
+      'GET'
+    ),
 
+  // ========================================================
   // Dashboard
+  // ========================================================
 
   getDashboard: () =>
     callApi<{
@@ -412,14 +623,22 @@ export const api = {
       'GET'
     ),
 
+  // ========================================================
   // Profile
+  // ========================================================
 
-  updateProfile: (updates: Partial<User>) =>
+  updateProfile: (
+    updates: Partial<User>
+  ) =>
     callApi<{
       user: User;
-    }>('updateProfile', {
-      updates,
-    }),
+    }>(
+      'updateProfile',
+      {
+        updates,
+      },
+      'POST'
+    ),
 
   changePassword: (
     currentPassword: string,
@@ -427,19 +646,31 @@ export const api = {
   ) =>
     callApi<{
       success: boolean;
-    }>('changePassword', {
-      currentPassword,
-      newPassword,
-    }),
+    }>(
+      'changePassword',
+      {
+        currentPassword,
+        newPassword,
+      },
+      'POST'
+    ),
 
-  resetPassword: (userId: string) =>
+  resetPassword: (
+    userId: string
+  ) =>
     callApi<{
       success: boolean;
-    }>('resetPassword', {
-      userId,
-    }),
+    }>(
+      'resetPassword',
+      {
+        userId,
+      },
+      'POST'
+    ),
 
+  // ========================================================
   // Messages
+  // ========================================================
 
   sendMessage: (
     receiverId: string,
@@ -447,12 +678,18 @@ export const api = {
   ) =>
     callApi<{
       success: boolean;
-    }>('sendMessage', {
-      receiverId,
-      content,
-    }),
+    }>(
+      'sendMessage',
+      {
+        receiverId,
+        content,
+      },
+      'POST'
+    ),
 
-  getMessages: (contactId?: string) =>
+  getMessages: (
+    contactId?: string
+  ) =>
     callApi<{
       messages: import('@/types').Message[];
       contacts: {
@@ -462,33 +699,50 @@ export const api = {
       }[];
     }>(
       'getMessages',
-      { contactId },
+      {
+        contactId,
+      },
       'GET'
     ),
 
-  markMessageRead: (messageId: string) =>
+  markMessageRead: (
+    messageId: string
+  ) =>
     callApi<{
       success: boolean;
-    }>('markMessageRead', {
-      messageId,
-    }),
+    }>(
+      'markMessageRead',
+      {
+        messageId,
+      },
+      'POST'
+    ),
 
+  // ========================================================
   // Notifications
+  // ========================================================
 
   sendNotification: (
-    targetRole: UserRole | 'all' | 'group',
+    targetRole:
+      | UserRole
+      | 'all'
+      | 'group',
     title: string,
     content: string,
     targetUserId?: string
   ) =>
     callApi<{
       success: boolean;
-    }>('sendNotification', {
-      targetRole,
-      title,
-      content,
-      targetUserId,
-    }),
+    }>(
+      'sendNotification',
+      {
+        targetRole,
+        title,
+        content,
+        targetUserId,
+      },
+      'POST'
+    ),
 
   getNotifications: () =>
     callApi<{
@@ -504,11 +758,17 @@ export const api = {
   ) =>
     callApi<{
       success: boolean;
-    }>('markNotificationRead', {
-      notificationId,
-    }),
+    }>(
+      'markNotificationRead',
+      {
+        notificationId,
+      },
+      'POST'
+    ),
 
+  // ========================================================
   // Certificates
+  // ========================================================
 
   issueCertificate: (
     userId: string,
@@ -516,21 +776,31 @@ export const api = {
   ) =>
     callApi<{
       certificate: import('@/types').Certificate;
-    }>('issueCertificate', {
-      userId,
-      courseId,
-    }),
+    }>(
+      'issueCertificate',
+      {
+        userId,
+        courseId,
+      },
+      'POST'
+    ),
 
-  getCertificates: (userId?: string) =>
+  getCertificates: (
+    userId?: string
+  ) =>
     callApi<{
       certificates: import('@/types').Certificate[];
     }>(
       'getCertificates',
-      { userId },
+      {
+        userId,
+      },
       'GET'
     ),
 
+  // ========================================================
   // Settings
+  // ========================================================
 
   getSettings: () =>
     callApi<{
@@ -542,15 +812,23 @@ export const api = {
     ),
 
   updateSettings: (
-    settings: Partial<import('@/types').SiteSettings>
+    settings: Partial<
+      import('@/types').SiteSettings
+    >
   ) =>
     callApi<{
       success: boolean;
-    }>('updateSettings', {
-      settings,
-    }),
+    }>(
+      'updateSettings',
+      {
+        settings,
+      },
+      'POST'
+    ),
 
+  // ========================================================
   // Courses
+  // ========================================================
 
   getCourses: () =>
     callApi<{
@@ -561,33 +839,57 @@ export const api = {
       'GET'
     ),
 
-  startNewCourse: (name: string) =>
+  startNewCourse: (
+    name: string
+  ) =>
     callApi<{
       course: import('@/types').Course;
-    }>('startNewCourse', {
-      name,
-    }),
+    }>(
+      'startNewCourse',
+      {
+        name,
+      },
+      'POST'
+    ),
 
+  // ========================================================
   // Activity Log
+  // ========================================================
 
   getActivityLog: () =>
     callApi<{
       logs: import('@/types').ActivityLog[];
-    }>('getActivityLog'),
+    }>(
+      'getActivityLog',
+      {},
+      'GET'
+    ),
 
+  // ========================================================
   // Backup
+  // ========================================================
 
   backupDatabase: () =>
     callApi<{
       backup: import('@/types').BackupRecord;
-    }>('backupDatabase'),
+    }>(
+      'backupDatabase',
+      {},
+      'POST'
+    ),
 
-  restoreBackup: (backupId: string) =>
+  restoreBackup: (
+    backupId: string
+  ) =>
     callApi<{
       success: boolean;
-    }>('restoreBackup', {
-      backupId,
-    }),
+    }>(
+      'restoreBackup',
+      {
+        backupId,
+      },
+      'POST'
+    ),
 
   getBackups: () =>
     callApi<{
@@ -598,14 +900,22 @@ export const api = {
       'GET'
     ),
 
+  // ========================================================
   // Files
+  // ========================================================
 
   getFiles: () =>
     callApi<{
       files: import('@/types').FileItem[];
-    }>('getFiles'),
+    }>(
+      'getFiles',
+      {},
+      'POST'
+    ),
 
+  // ========================================================
   // Admin management
+  // ========================================================
 
   addSupervisor: (
     name: string,
@@ -615,12 +925,16 @@ export const api = {
   ) =>
     callApi<{
       success: boolean;
-    }>('addSupervisor', {
-      name,
-      email,
-      phone,
-      password,
-    }),
+    }>(
+      'addSupervisor',
+      {
+        name,
+        email,
+        phone,
+        password,
+      },
+      'POST'
+    ),
 
   addAdmin: (
     name: string,
@@ -630,18 +944,28 @@ export const api = {
   ) =>
     callApi<{
       success: boolean;
-    }>('addAdmin', {
-      name,
-      email,
-      phone,
-      password,
-    }),
+    }>(
+      'addAdmin',
+      {
+        name,
+        email,
+        phone,
+        password,
+      },
+      'POST'
+    ),
 
+  // ========================================================
   // Setup
+  // ========================================================
 
   setupSheets: () =>
     callApi<{
       success: boolean;
       sheetsCreated: string[];
-    }>('setupSheets'),
+    }>(
+      'setupSheets',
+      {},
+      'POST'
+    ),
 };
